@@ -3,5 +3,8 @@ node_modules/
 .env
 .openkaren/
 .relay/
+.agent-relay/
+.trajectories/
+.workflow-artifacts/
 relayfile-mount/
 *.log

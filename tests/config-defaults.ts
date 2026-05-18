@@ -35,6 +35,8 @@ try {
   assertEqual(config.burnCommand, 'burn', 'default burn command');
   assertEqual(config.washCommand, 'wash', 'default wash command');
   assertEqual(config.tokensaveCommand, 'tokensave', 'default tokensave command');
+  assertEqual(config.questionRouterModel, null, 'default question router model');
+  assertEqual(config.openaiApiKey, null, 'default OpenAI API key');
 
   const commandConfig = loadConfig({
     TELEGRAM_BOT_TOKEN: 'test-token',
@@ -43,6 +45,16 @@ try {
   });
 
   assertEqual(commandConfig.agentMode, 'command', 'implicit command mode');
+
+  const routerConfig = loadConfig({
+    TELEGRAM_BOT_TOKEN: 'test-token',
+    OPENKAREN_DATA_DIR: dataDir,
+    OPENKAREN_QUESTION_ROUTER_MODEL: 'gpt-test-router',
+    OPENAI_API_KEY: 'sk-test',
+  });
+
+  assertEqual(routerConfig.questionRouterModel, 'gpt-test-router', 'question router model env');
+  assertEqual(routerConfig.openaiApiKey, 'sk-test', 'OpenAI API key env');
 
   const queueConfig = loadConfig({
     TELEGRAM_BOT_TOKEN: 'test-token',
@@ -59,6 +71,8 @@ try {
       'OPENKAREN_AGENT_MODE=relay',
       'OPENKAREN_AGENT_COMMAND=',
       'OPENKAREN_RELAYCAST_ENABLED=true',
+      'OPENKAREN_QUESTION_ROUTER_MODEL=gpt-env-file-router',
+      'OPENAI_API_KEY=sk-env-file',
       'OPENKAREN_RELAYCRON_BASE_URL=http://127.0.0.1:4007',
       'OPENKAREN_RELAYCRON_API_KEY=ac_test',
       'OPENKAREN_RELAYCRON_WEBHOOK_URL=http://127.0.0.1:7528/webhooks/relaycron',
@@ -74,6 +88,8 @@ try {
 
   assertEqual(envFileConfig.agentMode, 'relay', '.env overrides inherited agent mode');
   assertEqual(envFileConfig.agentCommand, null, '.env clears inherited agent command');
+  assertEqual(envFileConfig.questionRouterModel, 'gpt-env-file-router', '.env question router model');
+  assertEqual(envFileConfig.openaiApiKey, 'sk-env-file', '.env OpenAI API key');
   assertEqual(envFileConfig.relaycastEnabled, true, '.env relaycast enabled');
   assertEqual(
     envFileConfig.relaycronWebhookUrl,

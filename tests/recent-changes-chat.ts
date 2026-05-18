@@ -113,7 +113,10 @@ try {
   }
 
   const text = String(sentMessages[0].text ?? '');
-  if (!text.includes('Here is the quick read on recent activity.')) {
+  if (
+    !text.includes('Here is the quick read on recent activity.') &&
+    !text.includes('Here is the quick read on recent repo changes.')
+  ) {
     throw new Error(`Expected recent activity header, got: ${text}`);
   }
   if (!text.includes('recent user: What changes have been made recently')) {
@@ -149,6 +152,11 @@ async function handleTelegramRequest(
   const [, token, method] = match;
   if (token !== 'recent-token') {
     throw new Error(`Unexpected token: ${token}`);
+  }
+  if (method === 'setMyCommands') {
+    await readBody(request);
+    sendJson(response, { ok: true, result: true });
+    return;
   }
   if (method === 'getUpdates') {
     getUpdatesCalls += 1;

@@ -54,6 +54,8 @@ try {
     agentRelayNamePrefix: 'OpenKarenCoder',
     agentRelayIdleThresholdSecs: 20,
     agentRelayProgressIntervalMs: 120_000,
+    questionRouterModel: null,
+    openaiApiKey: null,
     dataDir,
     pollTimeoutSeconds: 1,
   };
@@ -90,8 +92,8 @@ try {
   }
 
   const fallbackReply = await chatReply('Yo yo', config, mockState, null);
-  if (!fallbackReply.includes('I did not get enough signal') || !fallbackReply.includes('recent activity, integrations, skills, model, current status')) {
-    throw new Error(`Expected improved fallback reply, got: ${fallbackReply}`);
+  if (!fallbackReply.includes('best quick read I can give from local context') || !fallbackReply.includes('- key wiring:')) {
+    throw new Error(`Expected generalized local-context reply, got: ${fallbackReply}`);
   }
 
   const capabilitiesReply = await chatReply('What can you do', config, mockState, null);
@@ -102,6 +104,11 @@ try {
   const recentReply = await chatReply('What changed recently?', config, mockState, null);
   if (!recentReply.includes('recent assistant: Here is the quick read on recent activity.') || !recentReply.includes('pending workflow: daily-standup')) {
     throw new Error(`Expected recent activity reply to include assistant/workflow context, got: ${recentReply}`);
+  }
+
+  const integrationDepthReply = await chatReply('How fully integrated is agent assistant?', config, mockState, null);
+  if (!integrationDepthReply.includes('honest read on that integration') || !integrationDepthReply.includes('agent-assistant is core, not peripheral')) {
+    throw new Error(`Expected integration-depth reply for agent-assistant, got: ${integrationDepthReply}`);
   }
 
   console.log('direct chat answers ok');

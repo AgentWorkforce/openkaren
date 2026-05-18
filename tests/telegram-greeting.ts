@@ -80,6 +80,8 @@ const runtime = createOpenKaren({
   agentRelayNamePrefix: 'OpenKarenCoder',
   agentRelayIdleThresholdSecs: 20,
   agentRelayProgressIntervalMs: 120_000,
+  questionRouterModel: null,
+  openaiApiKey: null,
   dataDir,
   pollTimeoutSeconds: 1,
 });
@@ -87,7 +89,7 @@ const runtime = createOpenKaren({
 const running = runtime.start();
 
 try {
-  await waitFor(() => sentMessages.length >= 1, 5_000);
+  await waitFor(() => sentMessages.length >= 2, 5_000);
   await sleep(250);
   await runtime.stop();
   await Promise.race([
@@ -105,11 +107,24 @@ try {
     throw new Error(`Expected registered Telegram commands, got ${JSON.stringify(registeredCommands[0])}`);
   }
 
-  if (sentMessages.length !== 1) {
-    throw new Error(`Expected greeting to send one chat response, got ${sentMessages.length}`);
+  if (sentMessages.length !== 2) {
+    throw new Error(`Expected two chat responses, got ${sentMessages.length}`);
   }
   if (sentMessages[0].text !== 'Hey. I can answer questions about recent activity, current setup, integrations, skills, and active work, or take a concrete task.') {
     throw new Error(`Unexpected greeting response: ${String(sentMessages[0].text)}`);
+  }
+  if (
+    typeof sentMessages[0].text === 'string' &&
+    sentMessages[0].text.includes('best quick read I can give from local context')
+  ) {
+    throw new Error(`Greeting fell through to generalized context reply: ${String(sentMessages[0].text)}`);
+  }
+  if (
+    typeof sentMessages[1].text !== 'string' ||
+    !sentMessages[1].text.includes('best quick read I can give from local context') ||
+    !sentMessages[1].text.includes('- key wiring:')
+  ) {
+    throw new Error(`Unexpected vague-chat fallback response: ${String(sentMessages[1].text)}`);
   }
 
   const inboxDir = join(dataDir, 'inbox');
@@ -146,7 +161,7 @@ async function handleTelegramRequest(
     getUpdatesCalls += 1;
     sendJson(response, {
       ok: true,
-      result: getUpdatesCalls === 1 ? [telegramUpdate()] : [],
+      result: getUpdatesCalls === 1 ? telegramUpdates() : [],
     });
     return;
   }
@@ -158,17 +173,29 @@ async function handleTelegramRequest(
   throw new Error(`Unexpected Telegram method: ${method}`);
 }
 
-function telegramUpdate(): Record<string, unknown> {
-  return {
-    update_id: 10,
-    message: {
-      message_id: 20,
-      date: Math.floor(Date.now() / 1000),
-      chat: { id: chatId, type: 'private' },
-      from: { id: 99, is_bot: false, first_name: 'Test' },
-      text: 'good morning Karen!',
+function telegramUpdates(): Array<Record<string, unknown>> {
+  return [
+    {
+      update_id: 10,
+      message: {
+        message_id: 20,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: chatId, type: 'private' },
+        from: { id: 99, is_bot: false, first_name: 'Test' },
+        text: 'good morning Karen!',
+      },
     },
-  };
+    {
+      update_id: 11,
+      message: {
+        message_id: 21,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: chatId, type: 'private' },
+        from: { id: 99, is_bot: false, first_name: 'Test' },
+        text: 'Yo yo',
+      },
+    },
+  ];
 }
 
 function sendJson(response: ServerResponse, body: unknown): void {

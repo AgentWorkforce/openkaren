@@ -152,7 +152,7 @@ function testConfig(dataDir: string): OpenKarenConfig {
     nangoSecretKey: null,
     rtkCommand: 'rtk',
     tilthCommand: 'tilth',
-    burnCommand: 'burn',
+    burnCommand: 'burn-missing-agent-runner-test',
     washCommand: 'wash',
     tokensaveCommand: 'tokensave',
     monthlyBudgetUsd: 75,
@@ -167,6 +167,8 @@ function testConfig(dataDir: string): OpenKarenConfig {
     agentRelayNamePrefix: 'OpenKarenCoder',
     agentRelayIdleThresholdSecs: 1,
     agentRelayProgressIntervalMs: 120_000,
+    questionRouterModel: null,
+    openaiApiKey: null,
     dataDir,
     pollTimeoutSeconds: 1,
   };

@@ -48,8 +48,39 @@ export type OpenKarenConfig = {
   agentRelayNamePrefix: string;
   agentRelayIdleThresholdSecs: number;
   agentRelayProgressIntervalMs: number;
+  questionRouterModel: string | null;
+  openaiApiKey: string | null;
   dataDir: string;
   pollTimeoutSeconds: number;
+};
+
+export type QuestionRouterRoute = 'direct_answer' | 'clarify' | 'coding_task';
+
+export type QuestionRouterIntent =
+  | 'architecture'
+  | 'integration_status'
+  | 'runtime_status'
+  | 'recent_activity'
+  | 'capabilities'
+  | 'skills_tools'
+  | 'model_setup'
+  | 'general';
+
+export type QuestionRouterDecision = {
+  route: QuestionRouterRoute;
+  intent?: QuestionRouterIntent;
+  reason?: string;
+};
+
+export type QuestionRouterContextPacket = {
+  activeWork: string | null;
+  recentMessages: Array<{ role: string; text: string }>;
+  pendingWorkflows: Array<{ label: string; status: string }>;
+  wiredIntegrations: string[];
+  repoSummary: string | null;
+  modeSummary: string[];
+  skillSummary: string[];
+  integrationSummary: string[];
 };
 
 export type TelegramChat = {

@@ -79,6 +79,8 @@ const runtime = createOpenKaren({
   agentRelayNamePrefix: 'OpenKarenCoder',
   agentRelayIdleThresholdSecs: 20,
   agentRelayProgressIntervalMs: 120_000,
+  questionRouterModel: null,
+  openaiApiKey: null,
   dataDir,
   pollTimeoutSeconds: 1,
 });

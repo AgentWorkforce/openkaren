@@ -34,6 +34,7 @@ import {
 } from './relaycron.js';
 import { integrationStatuses, integrationStatusText } from './integrations.js';
 import { inboxEventText, type OpenKarenInboxEvent } from './inbox.js';
+import { decideQuestionRoute } from './question-router.js';
 import { relayfileEventText, RelayfileWatcher, type RelayfileWatchEvent } from './relayfile.js';
 import { routeOpenKarenMessage } from './routing.js';
 import { createKarenStateClient, type KarenStateClient } from './state.js';
@@ -48,6 +49,9 @@ import type {
   AgentRunResult,
   OpenKarenConfig,
   OpenKarenTurn,
+  QuestionRouterContextPacket,
+  QuestionRouterDecision,
+  QuestionRouterIntent,
   RelaycastWebhookPayload,
   SlackEventPayload,
   TelegramUpdate,
@@ -88,23 +92,32 @@ type ProactiveCodingInput = {
 };
 
 type DirectQuestionIntent =
+  | 'architecture'
   | 'recentChanges'
   | 'model'
   | 'skills'
   | 'integrations'
+  | 'integrationDepth'
   | 'status'
   | 'capabilities';
 
-type LocalContextPacket = {
-  activeWork: string | null;
-  recentMessages: Array<{ role: string; text: string }>;
-  pendingWorkflows: Array<{ label: string; status: string }>;
-  wiredIntegrations: string[];
-  repoSummary: string | null;
-  modeSummary: string[];
-  skillSummary: string[];
-  integrationSummary: string[];
-};
+type QuestionRoute =
+  | {
+    kind: 'chat';
+    intent: DirectQuestionIntent | 'general' | 'clarify' | null;
+    decidedBy: 'llm' | 'fallback';
+    decisionRoute: QuestionRouterDecision['route'];
+    semanticIntent?: QuestionRouterIntent;
+    reason?: string;
+  }
+  | {
+    kind: 'coding';
+    intent: 'task';
+    decidedBy: 'llm' | 'fallback';
+    decisionRoute: QuestionRouterDecision['route'];
+    semanticIntent?: QuestionRouterIntent;
+    reason?: string;
+  };
 
 export type OpenKarenRuntime = {
   start(): Promise<void>;
@@ -365,30 +378,21 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
             return;
           }
 
-          const route = routeOpenKarenMessage(message.text);
-          console.info('OpenKaren routed message', {
+          const route = await routeQuestion(message.text, config, state, activeCodingTurn);
+          console.info('question-router: routed message', {
             messageId: message.id,
             surfaceId: target.surfaceId,
             targetId: target.targetId,
-            route: route.kind,
-            reason: route.reason,
+            decided_by: route.decidedBy,
+            route: route.decisionRoute,
+            intent: route.intent,
+            semanticIntent: route.semanticIntent,
           });
 
           await recordInboundMessage(state, message);
 
           if (route.kind === 'chat') {
-            const reply = await chatReplyText(message.text, config, state, activeCodingTurn);
-            await context.runtime.emit({
-              surfaceId: target.surfaceId,
-              text: reply,
-              format: target.format,
-            });
-            await recordAssistantMessage(state, message, reply);
-            return;
-          }
-
-          if (isRecentChangesQuestion(normalizeCasualText(message.text))) {
-            const reply = await recentChangesReply(config, state, activeCodingTurn);
+            const reply = await chatReplyText(message.text, config, state, activeCodingTurn, route.intent);
             await context.runtime.emit({
               surfaceId: target.surfaceId,
               text: reply,
@@ -834,15 +838,25 @@ async function ensureSession(
     return;
   }
 
-  await sessions.create({
-    id: sessionId,
-    userId: message.userId,
-    workspaceId: message.workspaceId,
-    initialSurfaceId: target.surfaceId,
-    metadata: { targetId: target.targetId },
-  });
+  try {
+    await sessions.create({
+      id: sessionId,
+      userId: message.userId,
+      workspaceId: message.workspaceId,
+      initialSurfaceId: target.surfaceId,
+      metadata: { targetId: target.targetId },
+    });
+  } catch (error) {
+    if (!isDuplicateSessionError(error)) {
+      throw error;
+    }
+  }
   await sessions.touch(sessionId);
   await bridgeStateSession(state, message, target, sessionId);
+}
+
+function isDuplicateSessionError(error: unknown): boolean {
+  return error instanceof Error && /session already exists/i.test(error.message);
 }
 
 async function bridgeStateSession(
@@ -934,9 +948,10 @@ async function chatReplyText(
   config: OpenKarenConfig,
   state: KarenStateClient,
   activeCodingTurn: ActiveCodingTurn | null,
+  routedIntent: DirectQuestionIntent | 'general' | 'clarify' | null = null,
 ): Promise<string> {
   const normalized = normalizeCasualText(text);
-  const directAnswer = await directQuestionReply(normalized, config, state, activeCodingTurn);
+  const directAnswer = await directQuestionReply(normalized, config, state, activeCodingTurn, routedIntent);
   if (directAnswer) {
     return directAnswer;
   }
@@ -952,10 +967,7 @@ async function chatReplyText(
       'Try things like “what changed recently”, “what model are you running”, “what skills do you have installed”, or “what integrations are wired”.',
     ].join('\n');
   }
-  return [
-    'I did not get enough signal from that one.',
-    'I can answer questions about recent activity, integrations, skills, model, current status, or you can give me a concrete task.',
-  ].join('\n');
+  return await generalQuestionReply(normalized, config, state, activeCodingTurn);
 }
 
 async function directQuestionReply(
@@ -963,8 +975,19 @@ async function directQuestionReply(
   config: OpenKarenConfig,
   state: KarenStateClient,
   activeCodingTurn: ActiveCodingTurn | null,
+  routedIntent: DirectQuestionIntent | 'general' | 'clarify' | null = null,
 ): Promise<string | null> {
-  const intent = classifyDirectQuestion(text);
+  const intent = routedIntent && routedIntent !== 'general' && routedIntent !== 'clarify'
+    ? routedIntent
+    : classifyDirectQuestion(text);
+  if (routedIntent === 'clarify') {
+    return 'I can answer that, but I need a bit more shape. Ask about architecture, integrations, recent activity, current status, or give me a concrete task.';
+  }
+
+  if (routedIntent === 'general') {
+    return await generalQuestionReply(text, config, state, activeCodingTurn);
+  }
+
   if (!intent) {
     return null;
   }
@@ -972,15 +995,154 @@ async function directQuestionReply(
   return await composeDirectQuestionReply(intent, config, state, activeCodingTurn);
 }
 
+async function routeQuestion(
+  text: string,
+  config: OpenKarenConfig,
+  state: KarenStateClient,
+  activeCodingTurn: ActiveCodingTurn | null,
+): Promise<QuestionRoute> {
+  if (!config.openaiApiKey || !config.questionRouterModel) {
+    return fallbackQuestionRoute(text);
+  }
+
+  try {
+    const packet = await buildLocalContextPacket(config, state, activeCodingTurn);
+    const decision = await decideQuestionRoute(text, packet, config);
+    if (decision) {
+      return routeFromRouterDecision(decision, 'llm');
+    }
+  } catch (error) {
+    console.warn('question-router: fell back to local heuristics', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  console.info('question-router: decided_by=fallback because LLM decision was unavailable');
+  return fallbackQuestionRoute(text);
+}
+
+function routeFromRouterDecision(
+  decision: QuestionRouterDecision,
+  decidedBy: 'llm' | 'fallback',
+): QuestionRoute {
+  if (decision.route === 'coding_task') {
+    return {
+      kind: 'coding',
+      intent: 'task',
+      decidedBy,
+      decisionRoute: decision.route,
+      semanticIntent: decision.intent,
+      reason: decision.reason,
+    };
+  }
+
+  if (decision.route === 'clarify') {
+    return {
+      kind: 'chat',
+      intent: 'clarify',
+      decidedBy,
+      decisionRoute: decision.route,
+      semanticIntent: decision.intent,
+      reason: decision.reason,
+    };
+  }
+
+  return {
+    kind: 'chat',
+    intent: mapRouterIntentToDirectIntent(decision.intent),
+    decidedBy,
+    decisionRoute: decision.route,
+    semanticIntent: decision.intent,
+    reason: decision.reason,
+  };
+}
+
+function fallbackQuestionRoute(text: string): QuestionRoute {
+  const normalized = normalizeCasualText(text);
+  const directIntent = classifyDirectQuestion(normalized);
+  if (directIntent) {
+    return routeFromRouterDecision(
+      { route: 'direct_answer', intent: mapDirectIntentToRouterIntent(directIntent) },
+      'fallback',
+    );
+  }
+
+  const route = routeOpenKarenMessage(text);
+  if (route.kind === 'coding') {
+    return routeFromRouterDecision(
+      { route: 'coding_task', reason: route.reason },
+      'fallback',
+    );
+  }
+
+  return {
+    kind: 'chat',
+    intent: null,
+    decidedBy: 'fallback',
+    decisionRoute: 'direct_answer',
+    reason: 'fallback chat without direct semantic intent',
+  };
+}
+
+function mapRouterIntentToDirectIntent(
+  intent: QuestionRouterIntent | undefined,
+): DirectQuestionIntent | 'general' {
+  switch (intent) {
+    case 'architecture':
+      return 'architecture';
+    case 'integration_status':
+      return 'integrationDepth';
+    case 'runtime_status':
+      return 'status';
+    case 'recent_activity':
+      return 'recentChanges';
+    case 'capabilities':
+      return 'capabilities';
+    case 'skills_tools':
+      return 'skills';
+    case 'model_setup':
+      return 'model';
+    case 'general':
+    default:
+      return 'general';
+  }
+}
+
+function mapDirectIntentToRouterIntent(intent: DirectQuestionIntent): QuestionRouterIntent {
+  switch (intent) {
+    case 'architecture':
+      return 'architecture';
+    case 'integrationDepth':
+    case 'integrations':
+      return 'integration_status';
+    case 'status':
+      return 'runtime_status';
+    case 'recentChanges':
+      return 'recent_activity';
+    case 'capabilities':
+      return 'capabilities';
+    case 'skills':
+      return 'skills_tools';
+    case 'model':
+      return 'model_setup';
+  }
+}
+
 function classifyDirectQuestion(text: string): DirectQuestionIntent | null {
   if (isRecentChangesQuestion(text)) {
     return 'recentChanges';
+  }
+  if (asksAboutArchitecture(text)) {
+    return 'architecture';
   }
   if (asksAboutModel(text)) {
     return 'model';
   }
   if (asksAboutSkills(text)) {
     return 'skills';
+  }
+  if (asksAboutIntegrationDepth(text)) {
+    return 'integrationDepth';
   }
   if (asksAboutIntegrations(text)) {
     return 'integrations';
@@ -1001,6 +1163,14 @@ function asksAboutModel(text: string): boolean {
     /\bwhat are you running on\b/.test(text);
 }
 
+function asksAboutArchitecture(text: string): boolean {
+  return /\bwhat exactly are you built on\b/.test(text) ||
+    /\bwhat are you built on\b/.test(text) ||
+    /\bhow are you built\b/.test(text) ||
+    /\barchitecture\b/.test(text) ||
+    /\bhow do you work\b/.test(text);
+}
+
 function asksAboutSkills(text: string): boolean {
   return /\bwhat skills\b/.test(text) ||
     /\bwhich skills\b/.test(text) ||
@@ -1016,11 +1186,36 @@ function asksAboutIntegrations(text: string): boolean {
     /\bwhat do you have connected\b/.test(text);
 }
 
+function asksAboutIntegrationDepth(text: string): boolean {
+  return (/(how|what)\s+(fully|deeply|well|real)\s+integrated\b/.test(text) ||
+    /\bintegration depth\b/.test(text) ||
+    /\bhow real\b.*\bintegration\b/.test(text) ||
+    /\bactually using relay\b/.test(text) ||
+    /\bhow integrated\b/.test(text)) &&
+    (/\bagent assistant\b/.test(text) || /\bagent-assistant\b/.test(text) || /\bsdk\b/.test(text) || /\brelay\b/.test(text));
+}
+
 function asksAboutStatus(text: string): boolean {
   return /\bwhat are you working on\b/.test(text) ||
     /\bwhat are you doing\b/.test(text) ||
     /\bcurrent status\b/.test(text) ||
     /\bstatus right now\b/.test(text);
+}
+
+async function generalQuestionReply(
+  _text: string,
+  config: OpenKarenConfig,
+  state: KarenStateClient,
+  activeCodingTurn: ActiveCodingTurn | null,
+): Promise<string> {
+  const packet = await buildLocalContextPacket(config, state, activeCodingTurn);
+  const facets = [
+    packet.activeWork ? `- active work: ${packet.activeWork}` : '- active work: none right now',
+    `- mode: ${config.agentMode}`,
+    `- key wiring: ${packet.wiredIntegrations.join(', ') || 'no major integrations wired'}`,
+    '- ask more specifically about architecture, integrations, or recent activity if you want a sharper answer',
+  ];
+  return ['Here is the best quick read I can give from local context.', ...facets].join('\n');
 }
 
 async function composeDirectQuestionReply(
@@ -1030,13 +1225,20 @@ async function composeDirectQuestionReply(
   activeCodingTurn: ActiveCodingTurn | null,
 ): Promise<string> {
   const packet = await buildLocalContextPacket(config, state, activeCodingTurn);
-  const facets = selectFacetsForIntent(intent, packet);
+  const facets = selectFacetsForIntent(intent, packet, config, activeCodingTurn);
   const lead = leadLineForIntent(intent, config);
   return [lead, ...facets].filter(Boolean).join('\n');
 }
 
-function selectFacetsForIntent(intent: DirectQuestionIntent, packet: LocalContextPacket): string[] {
+function selectFacetsForIntent(
+  intent: DirectQuestionIntent,
+  packet: QuestionRouterContextPacket,
+  config: OpenKarenConfig,
+  activeCodingTurn: ActiveCodingTurn | null,
+): string[] {
   switch (intent) {
+    case 'architecture':
+      return architectureFacets(config);
     case 'recentChanges':
       return recentActivityFacets(packet);
     case 'model':
@@ -1045,14 +1247,10 @@ function selectFacetsForIntent(intent: DirectQuestionIntent, packet: LocalContex
       return packet.skillSummary;
     case 'integrations':
       return packet.integrationSummary;
+    case 'integrationDepth':
+      return integrationDepthFacets(config);
     case 'status':
-      return [
-        packet.activeWork
-          ? `- active work: ${packet.activeWork}`
-          : '- active work: none right now',
-        ...packet.modeSummary.slice(0, 2),
-        '- ask what changed recently if you want a recent activity summary',
-      ];
+      return statusFacets(config, activeCodingTurn);
     case 'capabilities':
       return [
         'I can summarize recent activity, report the current setup, inspect wired integrations, and take coding tasks.',
@@ -1065,6 +1263,8 @@ function selectFacetsForIntent(intent: DirectQuestionIntent, packet: LocalContex
 
 function leadLineForIntent(intent: DirectQuestionIntent, config: OpenKarenConfig): string {
   switch (intent) {
+    case 'architecture':
+      return 'Here is the architecture read from local runtime context.';
     case 'recentChanges':
       return 'Here is the quick read on recent repo changes.';
     case 'model':
@@ -1075,6 +1275,8 @@ function leadLineForIntent(intent: DirectQuestionIntent, config: OpenKarenConfig
       return 'Here is the useful local tool and capability picture right now.';
     case 'integrations':
       return 'Here is the current wiring snapshot.';
+    case 'integrationDepth':
+      return 'Here is the honest read on that integration.';
     case 'status':
       return 'Here is my current working state.';
     case 'capabilities':
@@ -1088,7 +1290,7 @@ async function buildLocalContextPacket(
   config: OpenKarenConfig,
   state: KarenStateClient,
   activeCodingTurn: ActiveCodingTurn | null,
-): Promise<LocalContextPacket> {
+): Promise<QuestionRouterContextPacket> {
   const recent = await recentConversationSummary(state);
   const workflows = await workflowSummary(state);
   const wiredIntegrations = integrationStatuses(config)
@@ -1105,6 +1307,19 @@ async function buildLocalContextPacket(
     skillSummary: skillFacets(config),
     integrationSummary: integrationFacets(config),
   };
+}
+
+function architectureFacets(config: OpenKarenConfig): string[] {
+  return [
+    '- OpenKaren is a Telegram-first assistant built on @agent-assistant/sdk surfaces, sessions, traits, and handlers',
+    `- coding execution mode: ${config.agentMode}`,
+    config.agentMode === 'relay'
+      ? `- relay path: ${config.agentRelayCli} using the ${config.agentRelayWorkflow} workflow`
+      : config.agentMode === 'command'
+        ? `- command path: ${config.agentCommand ?? 'unset'}`
+        : '- queue mode is active',
+    '- local context comes from durable state, recent conversation, workflow state, integrations, and repo signal when available',
+  ];
 }
 
 function modelFacets(config: OpenKarenConfig): string[] {
@@ -1153,6 +1368,21 @@ function integrationFacets(config: OpenKarenConfig): string[] {
     .concat('- use /integrations if you want the full detail dump');
 }
 
+function integrationDepthFacets(config: OpenKarenConfig): string[] {
+  const statuses = integrationStatuses(config);
+  const agentAssistant = statuses.find((item) => item.id === 'agent-assistant');
+  const relay = statuses.find((item) => item.id === 'relay');
+  const durableState = statuses.find((item) => item.id === 'durable-state');
+
+  return [
+    '- agent-assistant is core, not peripheral',
+    `- runtime shell: ${agentAssistant?.detail ?? '@agent-assistant/sdk is present'}`,
+    `- execution path: ${relay?.detail ?? 'agent-relay execution status unknown'}`,
+    `- state layer: ${durableState?.detail ?? 'durable state status unknown'}`,
+    '- practical read: chat, sessions, traits, and surfaces are deeply integrated, while some behaviors are still composed locally inside OpenKaren rather than abstracted back into generic SDK primitives',
+  ];
+}
+
 function statusFacets(config: OpenKarenConfig, activeCodingTurn: ActiveCodingTurn | null): string[] {
   return [
     `- mode: ${config.agentMode}`,
@@ -1184,7 +1414,7 @@ async function recentChangesReply(
   return ['Here is the quick read on recent activity.', ...facets].join('\n');
 }
 
-function recentActivityFacets(packet: LocalContextPacket): string[] {
+function recentActivityFacets(packet: QuestionRouterContextPacket): string[] {
   const facets: string[] = [];
 
   facets.push(
