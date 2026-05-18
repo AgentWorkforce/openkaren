@@ -4,7 +4,7 @@ import { basename, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { integrationPrompt } from './integrations.js';
 import { createKarenStateClient } from './state.js';
-import { stampBurnSession } from './token-consciousness.js';
+import { ingestBurnLedger, stampBurnSession } from './token-consciousness.js';
 import { workforceModelForRole, workforcePromptForRole } from './workforce.js';
 import type {
   AgentRunResult,
@@ -123,6 +123,7 @@ export async function runOpenKarenTurn(
     messageId: `${turn.message.id}:assistant`,
     createdAt: new Date().toISOString(),
   });
+  await ingestBurnLedger(config);
 
   return result;
 }

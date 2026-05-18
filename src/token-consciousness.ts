@@ -1,13 +1,17 @@
 import { spawn } from 'node:child_process';
+import { commandAvailable } from './token-tools.js';
 import type { OpenKarenConfig, OpenKarenTurn } from './types.js';
 
 const BURN_TIMEOUT_MS = 15_000;
+const OPENKAREN_BURN_APP_TAG = 'openkaren';
+const OPENKAREN_BURN_PERSONA_TAG = 'karen';
 
 export type SpendSnapshot = {
   available: boolean;
   source: 'burn' | 'unavailable';
   budgetUsd: number;
   spendUsd: number | null;
+  totalTokens: number | null;
   remainingUsd: number | null;
   remainingRatio: number | null;
   detail: string;
@@ -17,18 +21,17 @@ export async function stampBurnSession(
   config: OpenKarenConfig,
   turn: OpenKarenTurn,
 ): Promise<void> {
-  await runBurn(config, [
-    'stamp',
-    turn.message.sessionId ?? turn.message.id,
-    '--persona',
-    'karen',
-    '--user-id',
-    turn.message.userId,
-    '--workflow-id',
-    turn.message.id,
-    '--tier',
-    'hosted-$75',
-  ]).catch(() => ({ ok: false as const, error: 'burn stamp failed' }));
+  if (!commandAvailable(config.burnCommand)) {
+    return;
+  }
+  await writeOpenKarenBurnStamp(config, turn).catch(() => {});
+}
+
+export async function ingestBurnLedger(config: OpenKarenConfig): Promise<void> {
+  if (!commandAvailable(config.burnCommand)) {
+    return;
+  }
+  await ingestOpenKarenBurnLedger(config).catch(() => {});
 }
 
 export async function readSpendSnapshot(
@@ -36,7 +39,12 @@ export async function readSpendSnapshot(
   userId: string,
 ): Promise<SpendSnapshot> {
   void userId;
-  const result = await runBurn(config, ['summary', '--json', '--since', monthStartIso()]);
+  const sdk = await readSpendSnapshotFromSdk(config).catch(() => null);
+  if (sdk) {
+    return sdk;
+  }
+
+  const result = await runBurn(config, burnSummaryArgs(config));
   if (!result.ok) {
     return unavailableSnapshot(config, result.error);
   }
@@ -55,9 +63,10 @@ export async function readSpendSnapshot(
     source: 'burn',
     budgetUsd,
     spendUsd,
+    totalTokens: parsed.totalTokens,
     remainingUsd,
     remainingRatio: budgetUsd > 0 ? remainingUsd / budgetUsd : 0,
-    detail: 'burn monthly spend',
+    detail: burnScopeDetail(config),
   };
 }
 
@@ -66,6 +75,7 @@ export function spendText(snapshot: SpendSnapshot): string {
     return [
       `Spend: unavailable`,
       `Budget: ${formatUsd(snapshot.budgetUsd)} / month`,
+      `Tokens: unavailable`,
       `Reason: ${snapshot.detail}`,
     ].join('\n');
   }
@@ -73,6 +83,7 @@ export function spendText(snapshot: SpendSnapshot): string {
   return [
     `Spend: ${formatUsd(snapshot.spendUsd)} / ${formatUsd(snapshot.budgetUsd)}`,
     `Remaining: ${formatUsd(snapshot.remainingUsd)} (${formatPercent(snapshot.remainingRatio)})`,
+    `Tokens: ${formatInteger(snapshot.totalTokens)}`,
     `Source: ${snapshot.source}`,
   ].join('\n');
 }
@@ -132,7 +143,75 @@ export function routingTierForBudget(snapshot: SpendSnapshot): 'premium' | 'stan
 // Backward-compatible alias for a typo that made it into an import path during development.
 export const budgetGatText = budgetGateText;
 
-function parseBurnSpend(stdout: string): { spendUsd: number; budgetUsd?: number } | null {
+export function openKarenBurnTags(config: Pick<OpenKarenConfig, 'stateUserId'>): Record<string, string> {
+  return {
+    app: OPENKAREN_BURN_APP_TAG,
+    persona: OPENKAREN_BURN_PERSONA_TAG,
+    tenant: config.stateUserId,
+  };
+}
+
+export function burnSummaryArgs(config: Pick<OpenKarenConfig, 'stateUserId'>): string[] {
+  return [
+    'summary',
+    '--json',
+    '--since',
+    monthStartIso(),
+    ...Object.entries(openKarenBurnTags(config)).flatMap(([key, value]) => ['--tag', `${key}=${value}`]),
+  ];
+}
+
+async function writeOpenKarenBurnStamp(
+  config: OpenKarenConfig,
+  turn: OpenKarenTurn,
+): Promise<void> {
+  const burnSdk = await import('@relayburn/sdk');
+  await burnSdk.writePendingStamp({
+    harness: 'codex',
+    cwd: config.agentCwd,
+    spawnerPid: process.pid,
+    sessionDirHint: turn.message.sessionId ?? turn.message.id,
+    enrichment: {
+      ...openKarenBurnTags(config),
+      workflowId: 'openkaren-turn',
+      workflowRunId: turn.message.id,
+      surface: turn.message.surfaceId,
+      surfaceUserId: turn.message.userId,
+      tier: 'hosted-$75',
+    },
+  });
+}
+
+async function readSpendSnapshotFromSdk(config: OpenKarenConfig): Promise<SpendSnapshot | null> {
+  const burnSdk = await import('@relayburn/sdk');
+  const summary = await burnSdk.summary({
+    since: monthStartIso(),
+    tags: openKarenBurnTags(config),
+  });
+  const spendUsd = summary.totalCost;
+  const budgetUsd = config.monthlyBudgetUsd;
+  const remainingUsd = Math.max(0, budgetUsd - spendUsd);
+  return {
+    available: true,
+    source: 'burn',
+    budgetUsd,
+    spendUsd,
+    totalTokens: numberValue(summary.totalTokens),
+    remainingUsd,
+    remainingRatio: budgetUsd > 0 ? remainingUsd / budgetUsd : 0,
+    detail: burnScopeDetail(config),
+  };
+}
+
+async function ingestOpenKarenBurnLedger(config: OpenKarenConfig): Promise<void> {
+  const burnSdk = await import('@relayburn/sdk');
+  await burnSdk.ingest({
+    harness: 'codex',
+  });
+  void config;
+}
+
+function parseBurnSpend(stdout: string): { spendUsd: number; budgetUsd?: number; totalTokens: number | null } | null {
   const trimmed = stdout.trim();
   if (!trimmed) {
     return null;
@@ -140,7 +219,7 @@ function parseBurnSpend(stdout: string): { spendUsd: number; budgetUsd?: number 
 
   const asNumber = Number.parseFloat(trimmed);
   if (Number.isFinite(asNumber)) {
-    return { spendUsd: asNumber };
+    return { spendUsd: asNumber, totalTokens: null };
   }
 
   let parsed: Record<string, unknown>;
@@ -163,14 +242,15 @@ function parseBurnSpend(stdout: string): { spendUsd: number; budgetUsd?: number 
   }
 
   const budgetUsd = firstNumber(parsed, ['budgetUsd', 'monthlyBudgetUsd', 'budget']);
+  const totalTokens = firstNumber(parsed, ['totalTokens', 'tokens', 'monthlyTokens']);
   const resolvedSpendUsd = spendUsd ?? nestedSpendUsd;
   if (resolvedSpendUsd === null) {
     return null;
   }
 
   return budgetUsd === null
-    ? { spendUsd: resolvedSpendUsd }
-    : { spendUsd: resolvedSpendUsd, budgetUsd };
+    ? { spendUsd: resolvedSpendUsd, totalTokens }
+    : { spendUsd: resolvedSpendUsd, budgetUsd, totalTokens };
 }
 
 function firstNumber(record: Record<string, unknown>, keys: string[]): number | null {
@@ -193,6 +273,10 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function numberValue(value: number | bigint): number {
+  return typeof value === 'bigint' ? Number(value) : value;
 }
 
 async function runBurn(
@@ -250,6 +334,7 @@ function unavailableSnapshot(config: OpenKarenConfig, detail: string): SpendSnap
     source: 'unavailable',
     budgetUsd: config.monthlyBudgetUsd,
     spendUsd: null,
+    totalTokens: null,
     remainingUsd: null,
     remainingRatio: null,
     detail,
@@ -265,6 +350,16 @@ function formatUsd(value: number): string {
 
 function formatPercent(value: number | null): string {
   return `${Math.round((value ?? 0) * 100)}%`;
+}
+
+function formatInteger(value: number | null): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? new Intl.NumberFormat('en-US').format(Math.round(value))
+    : 'unavailable';
+}
+
+function burnScopeDetail(config: Pick<OpenKarenConfig, 'stateUserId'>): string {
+  return `burn monthly spend scoped to app=openkaren, persona=karen, tenant=${config.stateUserId}`;
 }
 
 function monthStartIso(now = new Date()): string {

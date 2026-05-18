@@ -53,6 +53,7 @@ export function renderDashboard(data: DashboardData): string {
   const spendValue = spend.spendUsd === null ? 'Unavailable' : formatUsd(spend.spendUsd);
   const budgetValue = formatUsd(spend.budgetUsd);
   const remainingValue = spend.remainingUsd === null ? 'Unknown' : formatUsd(spend.remainingUsd);
+  const tokensValue = spend.totalTokens === null ? 'Unknown' : formatInteger(spend.totalTokens);
   const status = data.budgetGate ? 'Budget blocked' : spend.available ? 'Budget open' : 'Spend unavailable';
 
   return `<!doctype html>
@@ -113,7 +114,7 @@ export function renderDashboard(data: DashboardData): string {
     }
     .grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 12px;
     }
     .panel {
@@ -201,6 +202,11 @@ export function renderDashboard(data: DashboardData): string {
         <div class="muted">${percentUsed === null ? 'Usage unknown' : `${percentUsed.toFixed(1)}% used`}</div>
       </div>
       <div class="panel">
+        <h2>Tokens</h2>
+        <div class="value">${escapeHtml(tokensValue)}</div>
+        <div class="muted">OpenKaren scoped</div>
+      </div>
+      <div class="panel">
         <h2>Source</h2>
         <div class="value">${escapeHtml(spend.source)}</div>
         <div class="muted">${escapeHtml(spend.detail)}</div>
@@ -236,6 +242,10 @@ function toolHtml(label: string, value: string): string {
 
 function formatUsd(value: number): string {
   return `$${value.toFixed(2)}`;
+}
+
+function formatInteger(value: number): string {
+  return new Intl.NumberFormat('en-US').format(Math.round(value));
 }
 
 function clamp(value: number, min: number, max: number): number {

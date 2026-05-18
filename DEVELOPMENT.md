@@ -88,6 +88,8 @@ Telegram commands:
 The local token dashboard is served by the same HTTP listener used for webhooks.
 With defaults, open `http://127.0.0.1:7528/dashboard` while Karen is running.
 `/dashboard/data` returns the same spend payload as JSON.
+Spend is scoped to Burn enrichment tags `app=openkaren`, `persona=karen`, and
+`tenant=<OPENKAREN_STATE_USER_ID>`, so it does not report global Codex spend.
 
 All other actionable Telegram messages are development turns. OpenKaren should
 delegate them to the configured execution layer instead of falling back to a
@@ -162,11 +164,17 @@ Token tools are wired in three places:
 - `.mcp.json` starts Tilth as a local MCP server and TokenSave through `tokensave serve` when TokenSave is installed.
 - `AGENTS.md` gives spawned Codex workers the project-level policy for RTK, Tilth, and TokenSave.
 - OpenKaren validates token-tool commands in `/integrations` and injects exact RTK/Tilth/TokenSave guidance into relay and command prompts.
+- `karen setup token-tools` installs/configures RTK and TokenSave explicitly. Use `--check` to inspect and `--dry-run` to preview commands.
 
 RTK is not an npm dependency. Install the Rust Token Killer binary with Homebrew,
 Cargo, or the upstream install script, then verify `rtk gain` works before
 expecting compression. If `/integrations` says `rtk exists but is not Rust Token
 Killer`, a different `rtk` binary is earlier on `PATH`.
+
+TokenSave is also a native Rust CLI, not an npm dependency. OpenKaren setup uses
+`brew install aovestdipaperino/tap/tokensave` or `cargo install tokensave`, then
+runs `tokensave install --agent codex`, `tokensave init`, `tokensave sync`, and
+`tokensave doctor --agent codex` for `OPENKAREN_AGENT_CWD`.
 
 ## Telegram E2E test
 
