@@ -1,0 +1,11 @@
+name = "openkaren-state"
+main = "src/index.ts"
+compatibility_date = "2026-05-18"
+
+[[durable_objects.bindings]]
+name = "KAREN_DO"
+class_name = "KarenUserDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["KarenUserDO"]

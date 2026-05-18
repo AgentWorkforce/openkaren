@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "relaycast": {
+      "args": [
+        "-y",
+        "@relaycast/mcp"
+      ],
+      "command": "npx",
+      "env": {
+        "RELAY_BASE_URL": "https://api.relaycast.dev"
+      }
+    },
+    "tilth": {
+      "args": [
+        "./node_modules/tilth/run.js",
+        "--mcp",
+        "--scope",
+        "."
+      ],
+      "command": "node"
+    },
+    "tokensave": {
+      "args": [
+        "serve"
+      ],
+      "command": "tokensave"
+    }
+  }
+}
