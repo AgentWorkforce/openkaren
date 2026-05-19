@@ -98,6 +98,7 @@ type DirectQuestionIntent =
   | 'skills'
   | 'integrations'
   | 'integrationDepth'
+  | 'improvementAdvice'
   | 'status'
   | 'capabilities';
 
@@ -1091,7 +1092,10 @@ function mapRouterIntentToDirectIntent(
     case 'architecture':
       return 'architecture';
     case 'integration_status':
+    case 'integration_assessment':
       return 'integrationDepth';
+    case 'improvement_advice':
+      return 'improvementAdvice';
     case 'runtime_status':
       return 'status';
     case 'recent_activity':
@@ -1113,8 +1117,11 @@ function mapDirectIntentToRouterIntent(intent: DirectQuestionIntent): QuestionRo
     case 'architecture':
       return 'architecture';
     case 'integrationDepth':
+      return 'integration_assessment';
     case 'integrations':
       return 'integration_status';
+    case 'improvementAdvice':
+      return 'improvement_advice';
     case 'status':
       return 'runtime_status';
     case 'recentChanges':
@@ -1143,6 +1150,9 @@ function classifyDirectQuestion(text: string): DirectQuestionIntent | null {
   }
   if (asksAboutIntegrationDepth(text)) {
     return 'integrationDepth';
+  }
+  if (asksForImprovementAdvice(text)) {
+    return 'improvementAdvice';
   }
   if (asksAboutIntegrations(text)) {
     return 'integrations';
@@ -1202,6 +1212,14 @@ function asksAboutStatus(text: string): boolean {
     /\bstatus right now\b/.test(text);
 }
 
+function asksForImprovementAdvice(text: string): boolean {
+  return /(how|what)\s+(can|should)\s+(we|i)\s+(improve|change|tighten|clean up)\b/.test(text) ||
+    /\bhow do we make this (cleaner|better|more native|less hacked together)\b/.test(text) ||
+    /\bwhat would make this feel (more real|more native|less hacked together)\b/.test(text) ||
+    /\bnext step to (tighten|clean up|improve)\b/.test(text) ||
+    /\bhow can we improve the integration\b/.test(text);
+}
+
 async function generalQuestionReply(
   _text: string,
   config: OpenKarenConfig,
@@ -1213,9 +1231,9 @@ async function generalQuestionReply(
     packet.activeWork ? `- active work: ${packet.activeWork}` : '- active work: none right now',
     `- mode: ${config.agentMode}`,
     `- key wiring: ${packet.wiredIntegrations.join(', ') || 'no major integrations wired'}`,
-    '- ask more specifically about architecture, integrations, or recent activity if you want a sharper answer',
+    '- if you want a sharper answer, ask about architecture, integration depth, recent activity, or what to improve next',
   ];
-  return ['Here is the best quick read I can give from local context.', ...facets].join('\n');
+  return ['Here is the quickest grounded read I can give from local context.', ...facets].join('\n');
 }
 
 async function composeDirectQuestionReply(
@@ -1249,6 +1267,8 @@ function selectFacetsForIntent(
       return packet.integrationSummary;
     case 'integrationDepth':
       return integrationDepthFacets(config);
+    case 'improvementAdvice':
+      return improvementAdviceFacets(config);
     case 'status':
       return statusFacets(config, activeCodingTurn);
     case 'capabilities':
@@ -1264,19 +1284,21 @@ function selectFacetsForIntent(
 function leadLineForIntent(intent: DirectQuestionIntent, config: OpenKarenConfig): string {
   switch (intent) {
     case 'architecture':
-      return 'Here is the architecture read from local runtime context.';
+      return 'OpenKaren is real, but it is still more app-shaped than product-clean.';
     case 'recentChanges':
-      return 'Here is the quick read on recent repo changes.';
+      return 'Here is the quick read on recent activity.';
     case 'model':
       return config.agentMode === 'relay'
-        ? 'Here is what I am currently running on.'
+        ? 'I am currently running through a relay-backed coding path.'
         : 'Here is the current execution setup.';
     case 'skills':
       return 'Here is the useful local tool and capability picture right now.';
     case 'integrations':
       return 'Here is the current wiring snapshot.';
     case 'integrationDepth':
-      return 'Here is the honest read on that integration.';
+      return 'Agent-assistant is deeply integrated here, but not cleanly enough yet.';
+    case 'improvementAdvice':
+      return 'The biggest gap is not whether the integration is real. It is whether the behavior feels native instead of app-local.';
     case 'status':
       return 'Here is my current working state.';
     case 'capabilities':
@@ -1311,14 +1333,14 @@ async function buildLocalContextPacket(
 
 function architectureFacets(config: OpenKarenConfig): string[] {
   return [
-    '- OpenKaren is a Telegram-first assistant built on @agent-assistant/sdk surfaces, sessions, traits, and handlers',
-    `- coding execution mode: ${config.agentMode}`,
+    'The core runtime shell, sessions, and surface handling are genuinely owned by @agent-assistant/sdk, so this is not just branding over a custom bot.',
     config.agentMode === 'relay'
-      ? `- relay path: ${config.agentRelayCli} using the ${config.agentRelayWorkflow} workflow`
+      ? `The coding path is also real: work goes through ${config.agentRelayCli} on the ${config.agentRelayWorkflow} relay workflow.`
       : config.agentMode === 'command'
-        ? `- command path: ${config.agentCommand ?? 'unset'}`
-        : '- queue mode is active',
-    '- local context comes from durable state, recent conversation, workflow state, integrations, and repo signal when available',
+        ? `The coding path is currently command-backed through ${config.agentCommand ?? 'an unset command path'}.`
+        : 'The coding path is currently queue-shaped rather than live execution.',
+    'Where it still feels less clean is the higher-level product behavior. A fair amount of answer shaping and orchestration still lives inside OpenKaren instead of disappearing behind more reusable primitives.',
+    '- grounding: local context is built from durable state, recent conversation, workflow state, integrations, and repo signal when available',
   ];
 }
 
@@ -1375,11 +1397,25 @@ function integrationDepthFacets(config: OpenKarenConfig): string[] {
   const durableState = statuses.find((item) => item.id === 'durable-state');
 
   return [
-    '- agent-assistant is core, not peripheral',
+    'It owns the runtime shell, sessions, traits, and surface handling, so the integration is operationally real, not cosmetic.',
+    'The uneven part is the abstraction boundary. Some of the product judgment and orchestration still lives locally in OpenKaren instead of feeling like first-class assistant primitives.',
     `- runtime shell: ${agentAssistant?.detail ?? '@agent-assistant/sdk is present'}`,
     `- execution path: ${relay?.detail ?? 'agent-relay execution status unknown'}`,
     `- state layer: ${durableState?.detail ?? 'durable state status unknown'}`,
-    '- practical read: chat, sessions, traits, and surfaces are deeply integrated, while some behaviors are still composed locally inside OpenKaren rather than abstracted back into generic SDK primitives',
+    '- practical read: substantial runtime ownership, but still somewhat app-local in higher-level behavior',
+  ];
+}
+
+function improvementAdviceFacets(config: OpenKarenConfig): string[] {
+  return [
+    'I would tighten it in this order:',
+    '1. move more non-coding answer behavior behind reusable assistant primitives instead of app-local reply composition',
+    '2. make integration and advisory questions first-class semantic paths instead of letting them fall back toward generic summaries',
+    '3. keep the relay path explicit in user-facing progress and completion language so coding work feels relay-native, not queue-shaped',
+    '4. unify state, recent activity, and context summarization behind a cleaner shared surface so direct answers read like judgment instead of dumps',
+    config.agentMode === 'relay'
+      ? `5. preserve ${config.agentRelayCli} relay as the obvious primary execution path and keep fallback modes visibly secondary`
+      : '5. make relay the obvious primary execution path and keep fallback modes visibly secondary',
   ];
 }
 

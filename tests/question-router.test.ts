@@ -16,6 +16,16 @@ assertDecision(
 );
 
 assertDecision(
+  parseQuestionRouterDecision('{"route":"direct_answer","intent":"improvement_advice","reason":"advice question"}'),
+  {
+    route: 'direct_answer',
+    intent: 'improvement_advice',
+    reason: 'advice question',
+  },
+  'improvement advice decision',
+);
+
+assertDecision(
   parseQuestionRouterDecision('{"route":"clarify","reason":"too vague"}'),
   {
     route: 'clarify',
@@ -75,7 +85,7 @@ await assertTelegramRouterScenario('How is OpenKaren built?', {
     if (result.routerRequests.length !== 1) {
       throw new Error(`Expected one router request, got ${result.routerRequests.length}`);
     }
-    if (!String(result.sentMessages[0]?.text ?? '').includes('architecture read')) {
+    if (!String(result.sentMessages[0]?.text ?? '').includes('more app-shaped than product-clean')) {
       throw new Error(`Expected architecture reply, got: ${String(result.sentMessages[0]?.text)}`);
     }
     if (result.queuedItems.length !== 0) {
@@ -130,8 +140,21 @@ await assertTelegramRouterScenario('How fully integrated is agent assistant?', {
       throw new Error(`Expected no router requests when disabled, got ${result.routerRequests.length}`);
     }
     const reply = String(result.sentMessages[0]?.text ?? '');
-    if (!reply.includes('honest read on that integration') || !reply.includes('agent-assistant is core, not peripheral')) {
+    if (!reply.includes('deeply integrated here, but not cleanly enough yet') || !reply.includes('operationally real, not cosmetic')) {
       throw new Error(`Expected deterministic integration-depth fallback reply, got: ${reply}`);
+    }
+  },
+});
+
+await assertTelegramRouterScenario('How can we improve the integration?', {
+  routerEnabled: false,
+  verify(result) {
+    if (result.routerRequests.length !== 0) {
+      throw new Error(`Expected no router requests when disabled, got ${result.routerRequests.length}`);
+    }
+    const reply = String(result.sentMessages[0]?.text ?? '');
+    if (!reply.includes('biggest gap is not whether the integration is real') || !reply.includes('I would tighten it in this order:')) {
+      throw new Error(`Expected deterministic improvement advice reply, got: ${reply}`);
     }
   },
 });

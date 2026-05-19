@@ -82,7 +82,7 @@ try {
   };
 
   const modelReply = await chatReply('What model are you running?', config, mockState, null);
-  if (!modelReply.includes('currently running on') || !modelReply.includes('- relay cli: codex')) {
+  if (!modelReply.includes('running through a relay-backed coding path') || !modelReply.includes('- relay cli: codex')) {
     throw new Error(`Expected model reply to mention current model facets, got: ${modelReply}`);
   }
 
@@ -92,7 +92,7 @@ try {
   }
 
   const fallbackReply = await chatReply('Yo yo', config, mockState, null);
-  if (!fallbackReply.includes('best quick read I can give from local context') || !fallbackReply.includes('- key wiring:')) {
+  if (!fallbackReply.includes('quickest grounded read I can give from local context') || !fallbackReply.includes('- key wiring:')) {
     throw new Error(`Expected generalized local-context reply, got: ${fallbackReply}`);
   }
 
@@ -107,8 +107,13 @@ try {
   }
 
   const integrationDepthReply = await chatReply('How fully integrated is agent assistant?', config, mockState, null);
-  if (!integrationDepthReply.includes('honest read on that integration') || !integrationDepthReply.includes('agent-assistant is core, not peripheral')) {
+  if (!integrationDepthReply.includes('deeply integrated here, but not cleanly enough yet') || !integrationDepthReply.includes('operationally real, not cosmetic')) {
     throw new Error(`Expected integration-depth reply for agent-assistant, got: ${integrationDepthReply}`);
+  }
+
+  const improvementReply = await chatReply('How can we improve the integration?', config, mockState, null);
+  if (!improvementReply.includes('biggest gap is not whether the integration is real') || !improvementReply.includes('I would tighten it in this order:')) {
+    throw new Error(`Expected improvement advice reply, got: ${improvementReply}`);
   }
 
   console.log('direct chat answers ok');

@@ -59,6 +59,8 @@ export type QuestionRouterRoute = 'direct_answer' | 'clarify' | 'coding_task';
 export type QuestionRouterIntent =
   | 'architecture'
   | 'integration_status'
+  | 'integration_assessment'
+  | 'improvement_advice'
   | 'runtime_status'
   | 'recent_activity'
   | 'capabilities'
