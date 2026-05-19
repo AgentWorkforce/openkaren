@@ -6,5 +6,6 @@ node_modules/
 .agent-relay/
 .trajectories/
 .workflow-artifacts/
+workflows/
 relayfile-mount/
 *.log
