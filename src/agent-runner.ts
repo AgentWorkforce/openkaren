@@ -78,6 +78,7 @@ type RelaySession = {
   agents: RelaySessionAgent[];
   brokerStderr: string;
   unscopedWorkerOutput: string;
+  lifecycle: RelayExecutionLifecycle;
 };
 
 type RelaySessionAgent = {
@@ -87,6 +88,25 @@ type RelaySessionAgent = {
   workerOutput: string;
   lastLogText: string;
   turns: number;
+};
+
+type RelayExecutionStage =
+  | 'session_starting'
+  | 'session_ready'
+  | 'broker_reused'
+  | 'agent_started'
+  | 'waiting_for_result'
+  | 'completed'
+  | 'timed_out'
+  | 'failed';
+
+type RelayExecutionLifecycle = {
+  executionMode: OpenKarenConfig['agentMode'];
+  workflow: OpenKarenConfig['agentRelayWorkflow'];
+  cli: string;
+  brokerReuse: 'fresh' | 'reused';
+  currentStage: RelayExecutionStage;
+  lastRole: RelayAgentRole | null;
 };
 
 let relayFactory: () => Promise<{ AgentRelay: RelayConstructor; AgentRelayClient?: RelayClientFactory }> = async () =>
@@ -155,7 +175,7 @@ async function queueTurn(
 
   return {
     text: [
-      'Queued.',
+      'Queued for later execution.',
       queuedPath,
     ].join('\n'),
     exitCode: 0,
@@ -270,7 +290,7 @@ async function runRelayTurn(
     relaySessions.delete(sessionKey);
 
     return {
-      text: `OpenKaren could not run ${config.agentRelayCli} through agent-relay: ${
+      text: `OpenKaren could not start relay execution through ${config.agentRelayCli}: ${
         error instanceof Error ? error.message : String(error)
       }`,
       exitCode: null,
@@ -302,6 +322,8 @@ async function runSingleRelayTurn(
       agentName: member.agent.name,
       waitStatus: result.waitStatus,
       output: result.output,
+      workflow: config.agentRelayWorkflow,
+      brokerReuse: session.lifecycle.brokerReuse,
     }),
     exitCode: result.waitStatus === 'timeout' ? null : 0,
     timedOut: result.waitStatus === 'timeout',
@@ -338,6 +360,8 @@ async function runOrchestratedRelayTurn(
           agentName: member.agent.name,
           waitStatus: result.waitStatus,
           output: roleOutput,
+          workflow: config.agentRelayWorkflow,
+          brokerReuse: session.lifecycle.brokerReuse,
         }),
         exitCode: null,
         timedOut: true,
@@ -350,6 +374,8 @@ async function runOrchestratedRelayTurn(
       agentName: relayWorkflowName(config, turn, 'verifier'),
       waitStatus: 'idle',
       output: outputs[outputs.length - 1] ?? handoff,
+      workflow: config.agentRelayWorkflow,
+      brokerReuse: session.lifecycle.brokerReuse,
     }),
     exitCode: 0,
     timedOut: false,
@@ -392,6 +418,8 @@ async function ensureRelayAgent(
     lastLogText: '',
     turns: 0,
   };
+  session.lifecycle.currentStage = 'agent_started';
+  session.lifecycle.lastRole = role;
   session.agents.push(member);
 
   console.info('OpenKaren relay agent spawned', {
@@ -422,6 +450,8 @@ async function waitForRelayMember(
   session: RelaySession,
   member: RelaySessionAgent,
 ): Promise<{ waitStatus: RelayWaitStatus; output: string }> {
+  session.lifecycle.currentStage = 'waiting_for_result';
+  session.lifecycle.lastRole = member.role;
   const waitStatus = await member.agent.waitForIdle(config.agentTimeoutMs);
   member.turns += 1;
   console.info('OpenKaren relay agent wait finished', {
@@ -436,6 +466,12 @@ async function waitForRelayMember(
   if (logText) {
     member.lastLogText = logText;
   }
+
+  session.lifecycle.currentStage = waitStatus === 'timeout'
+    ? 'timed_out'
+    : waitStatus === 'idle'
+      ? 'completed'
+      : 'failed';
 
   return {
     waitStatus,
@@ -478,6 +514,14 @@ async function createRelaySession(
       agents: [],
       brokerStderr: '',
       unscopedWorkerOutput: '',
+      lifecycle: {
+        executionMode: config.agentMode,
+        workflow: config.agentRelayWorkflow,
+        cli: config.agentRelayCli,
+        brokerReuse: 'fresh',
+        currentStage: 'session_starting',
+        lastRole: null,
+      },
     };
 
     console.info('OpenKaren relay session starting', {
@@ -512,9 +556,14 @@ async function createRelaySession(
         stateDir: relayStateDir,
       });
       relay = AgentRelayClient.connect({ cwd: config.agentCwd }) as RelayHandle;
+      session.lifecycle.brokerReuse = 'reused';
+      session.lifecycle.currentStage = 'broker_reused';
     }
 
     session.relay = relay;
+    if (session.lifecycle.currentStage !== 'broker_reused') {
+      session.lifecycle.currentStage = 'session_ready';
+    }
 
     relay.onWorkerOutput = ({ name, chunk }: { name?: string; chunk: string }) => {
       const target = name
@@ -934,6 +983,8 @@ export function formatRelayResult(input: {
   agentName: string;
   waitStatus: RelayWaitStatus;
   output: string;
+  workflow?: OpenKarenConfig['agentRelayWorkflow'];
+  brokerReuse?: 'fresh' | 'reused';
 }): string {
   const output = input.output.trim();
 
@@ -942,10 +993,17 @@ export function formatRelayResult(input: {
   }
 
   if (input.waitStatus === 'timeout') {
-    return compactTelegramText(['Timed out.', output || 'No worker output.'].join('\n\n'));
+    return compactTelegramText([
+      `Relay ${input.workflow ?? 'execution'} timed out.`,
+      input.brokerReuse === 'reused' ? 'This turn was attached to an already-running broker.' : null,
+      output || 'No worker output.',
+    ].filter(Boolean).join('\n\n'));
   }
 
-  return 'Finished. No worker response.';
+  return [
+    `Relay ${input.workflow ?? 'execution'} finished without a useful worker summary.`,
+    input.brokerReuse === 'reused' ? 'It did reuse an already-running broker cleanly.' : null,
+  ].filter(Boolean).join(' ');
 }
 
 function compactTelegramText(text: string): string {

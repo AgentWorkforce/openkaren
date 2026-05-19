@@ -64,10 +64,24 @@ Useful environment variables:
 By default, actionable non-command Telegram messages become development turns.
 Low-intent chat such as `hey` stays in the lightweight chat path and does not
 spawn relay work. OpenKaren delegates development turns through `agent-relay`,
-which spawns the configured CLI in
-`OPENKAREN_AGENT_CWD`, waits for the worker to go idle, captures bounded logs,
-and sends the result back to Telegram. Set `OPENKAREN_AGENT_MODE=queue` only
-when you want Telegram ingestion and local inbox files in `.openkaren/inbox`.
+which treats relay as the primary serious execution path: it acquires or reuses
+a broker, spawns the configured CLI in `OPENKAREN_AGENT_CWD`, waits for the
+worker to go idle, captures bounded logs, and sends the result back to Telegram.
+Set `OPENKAREN_AGENT_MODE=queue` only when you want Telegram ingestion and local
+inbox files in `.openkaren/inbox`.
+
+The intended relay lifecycle is:
+
+1. request accepted
+2. coding turn classified
+3. relay session acquired or existing broker reused
+4. worker or workflow roles started
+5. relay waits for idle/completion
+6. result is summarized back to the user
+7. turn cleanup finishes
+
+`relay` is the preferred path, while `command` and `queue` remain explicit
+fallback modes.
 
 Example command wiring without relay:
 

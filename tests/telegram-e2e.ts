@@ -215,7 +215,7 @@ function assertTelegramFlow(): void {
 
   if (
     typeof secondMessage.text !== 'string' ||
-    !secondMessage.text.startsWith('Queued.')
+    !secondMessage.text.startsWith('Queued for later execution.')
   ) {
     throw new Error(`Unexpected queued response: ${String(secondMessage.text)}`);
   }

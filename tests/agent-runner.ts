@@ -27,7 +27,7 @@ const formattedEmptySuccess = formatRelayResult({
   output: '   ',
 });
 
-if (formattedEmptySuccess.includes('OpenKarenCoder-test')) {
+if (formattedEmptySuccess.includes('OpenKarenCoder-test') || !formattedEmptySuccess.includes('finished without a useful worker summary')) {
   throw new Error(`Expected empty relay response to hide agent name, got: ${formattedEmptySuccess}`);
 }
 
@@ -35,10 +35,13 @@ const formattedTimeout = formatRelayResult({
   agentName: 'OpenKarenCoder-test',
   waitStatus: 'timeout',
   output: 'Partial worker output',
+  workflow: 'orchestrated',
+  brokerReuse: 'reused',
 });
 
 if (
-  !formattedTimeout.toLowerCase().includes('timed out') ||
+  !formattedTimeout.toLowerCase().includes('relay orchestrated timed out') ||
+  !formattedTimeout.includes('already-running broker') ||
   formattedTimeout.includes('OpenKarenCoder-test')
 ) {
   throw new Error(`Expected timeout response without relay agent name, got: ${formattedTimeout}`);
