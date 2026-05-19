@@ -21,13 +21,23 @@ if (formattedSuccess !== normalResponse) {
   throw new Error(`Expected successful relay output to pass through, got: ${formattedSuccess}`);
 }
 
+const stagedResponse = formatRelayResult({
+  agentName: 'OpenKarenCoder-test',
+  waitStatus: 'idle',
+  output: '[verifier]\nChanged the response formatting and verified the routing test.',
+});
+
+if (stagedResponse !== normalResponse) {
+  throw new Error(`Expected staged relay output to collapse to the useful completion line, got: ${stagedResponse}`);
+}
+
 const formattedEmptySuccess = formatRelayResult({
   agentName: 'OpenKarenCoder-test',
   waitStatus: 'idle',
   output: '   ',
 });
 
-if (formattedEmptySuccess.includes('OpenKarenCoder-test') || !formattedEmptySuccess.includes('finished without a useful worker summary')) {
+if (formattedEmptySuccess.includes('OpenKarenCoder-test') || !formattedEmptySuccess.includes('did not leave a useful completion summary')) {
   throw new Error(`Expected empty relay response to hide agent name, got: ${formattedEmptySuccess}`);
 }
 
@@ -40,7 +50,7 @@ const formattedTimeout = formatRelayResult({
 });
 
 if (
-  !formattedTimeout.toLowerCase().includes('relay orchestrated timed out') ||
+  !formattedTimeout.toLowerCase().includes('relay orchestrated timed out before i got a clean completion summary') ||
   !formattedTimeout.includes('already-running broker') ||
   formattedTimeout.includes('OpenKarenCoder-test')
 ) {

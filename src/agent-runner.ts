@@ -989,21 +989,47 @@ export function formatRelayResult(input: {
   const output = input.output.trim();
 
   if (input.waitStatus !== 'timeout' && output) {
-    return compactTelegramText(output);
+    return compactTelegramText(shapeRelayCompletion(output));
   }
 
   if (input.waitStatus === 'timeout') {
     return compactTelegramText([
-      `Relay ${input.workflow ?? 'execution'} timed out.`,
+      `Relay ${input.workflow ?? 'execution'} timed out before I got a clean completion summary.`,
       input.brokerReuse === 'reused' ? 'This turn was attached to an already-running broker.' : null,
-      output || 'No worker output.',
+      output ? `Last useful output:\n${shapeRelayCompletion(output)}` : 'No worker output.',
     ].filter(Boolean).join('\n\n'));
   }
 
   return [
-    `Relay ${input.workflow ?? 'execution'} finished without a useful worker summary.`,
+    `Relay ${input.workflow ?? 'execution'} finished, but the worker did not leave a useful completion summary.`,
     input.brokerReuse === 'reused' ? 'It did reuse an already-running broker cleanly.' : null,
   ].filter(Boolean).join(' ');
+}
+
+function shapeRelayCompletion(output: string): string {
+  const normalized = stripAnsi(output)
+    .replace(/\r\n/g, '\n')
+    .trim();
+
+  if (!normalized) {
+    return '';
+  }
+
+  if (/^(changed|updated|fixed|implemented|verified|queued|reviewed|added)\b/i.test(normalized)) {
+    return normalized;
+  }
+
+  if (/^\[[^\]]+\]\s*$/m.test(normalized) || normalized.includes('[verifier]')) {
+    const lines = normalized
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => !/^\[[^\]]+\]$/.test(line));
+    const collapsed = lines.join('\n').trim();
+    return collapsed || normalized;
+  }
+
+  return normalized;
 }
 
 function compactTelegramText(text: string): string {
