@@ -190,21 +190,7 @@ function assertTelegramFlow(): void {
 
   if (
     typeof firstMessage.text !== 'string' ||
-    ![
-      'On it.',
-      'I see the problem. Rude of it.',
-      'Taking it apart now.',
-      'Delegating. With supervision, obviously.',
-      'I found the thread. Pulling.',
-      'Into the code mines.',
-      'Checking the damage.',
-      'I will make it less wrong.',
-      'Good. A real task.',
-      'This smells fixable.',
-      'Summoning the tiny committee.',
-      'Let me bully the repo a little.',
-      'Working. Elegance pending.',
-    ].includes(firstMessage.text)
+    !firstMessage.text.endsWith('Queue mode is on, so I am dropping it into the local execution inbox.')
   ) {
     throw new Error(`Unexpected first Telegram response: ${String(firstMessage.text)}`);
   }

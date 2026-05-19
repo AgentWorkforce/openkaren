@@ -623,7 +623,7 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
 
     await assistant.emit({
       surfaceId: input.surfaceId,
-      text: nextAcknowledgement(input.message.text),
+      text: codingTurnAcknowledgement(config, input.message.text),
       format: input.format,
     });
 
@@ -685,7 +685,7 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
       return;
     }
 
-    const acknowledgement = nextAcknowledgement(input.effectiveText);
+    const acknowledgement = codingTurnAcknowledgement(config, input.effectiveText);
     await input.context.runtime.emit({
       surfaceId: input.target.surfaceId,
       text: acknowledgement,
@@ -816,6 +816,17 @@ export function nextAcknowledgement(text = ''): string {
   }
 
   return pickAcknowledgement(ACKNOWLEDGEMENTS);
+}
+
+function codingTurnAcknowledgement(config: OpenKarenConfig, text = ''): string {
+  const base = nextAcknowledgement(text);
+  if (config.agentMode === 'relay') {
+    return `${base} Sending it through relay now.`;
+  }
+  if (config.agentMode === 'command') {
+    return `${base} Running it through the local command path now.`;
+  }
+  return `${base} Queue mode is on, so I am dropping it into the local execution inbox.`;
 }
 
 function pickAcknowledgement(options: readonly string[]): string {
@@ -1609,12 +1620,21 @@ function startRelayProgressTimer(
 
 function relayProgressText(activeCodingTurn: ActiveCodingTurn | null): string {
   if (!activeCodingTurn) {
-    return 'Still working. Relay task is pending.';
+    return 'Still working.';
   }
 
   const elapsedMs = Date.now() - Date.parse(activeCodingTurn.startedAt);
   const elapsedMinutes = Math.max(2, Math.floor(elapsedMs / 60_000));
-  return `Still working. Relay task pending for about ${elapsedMinutes} minutes.`;
+
+  if (activeCodingTurn.mode === 'relay') {
+    return `Still working. Relay execution has been in flight for about ${elapsedMinutes} minutes.`;
+  }
+
+  if (activeCodingTurn.mode === 'command') {
+    return `Still working. The local command path has been running for about ${elapsedMinutes} minutes.`;
+  }
+
+  return `Still working. Queue mode is active and this turn has been pending for about ${elapsedMinutes} minutes.`;
 }
 
 async function runOpenKarenTurnWithHardTimeout(
