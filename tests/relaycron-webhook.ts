@@ -152,6 +152,21 @@ try {
   if (dashboardData.statusCode !== 200 || dashboardData.body.userId !== 'local') {
     throw new Error(`Expected dashboard data, got ${dashboardData.statusCode}`);
   }
+  if (
+    !dashboardData.body.spend ||
+    (dashboardData.body.spend as { available?: unknown }).available !== false ||
+    (dashboardData.body.spend as { spendUsd?: unknown }).spendUsd !== null
+  ) {
+    throw new Error(`Expected unavailable scoped dashboard spend, got ${JSON.stringify(dashboardData.body.spend)}`);
+  }
+  const tagScope = dashboardData.body.tagScope as Record<string, unknown> | undefined;
+  if (tagScope?.app !== 'openkaren' || tagScope.persona !== 'karen' || tagScope.tenant !== 'local') {
+    throw new Error(`Expected OpenKaren dashboard tag scope, got ${JSON.stringify(tagScope)}`);
+  }
+  const tools = dashboardData.body.tools as Array<{ id?: string; state?: string }> | undefined;
+  if (!tools?.some((tool) => tool.id === 'burn' && tool.state === 'missing')) {
+    throw new Error(`Expected dashboard token tool readiness, got ${JSON.stringify(tools)}`);
+  }
 
   const wrongPath = await server.dispatchForTesting({
     method: 'POST',

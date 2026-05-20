@@ -15,6 +15,7 @@ export type SpendSnapshot = {
   remainingUsd: number | null;
   remainingRatio: number | null;
   detail: string;
+  tagScope: Record<string, string>;
 };
 
 export async function stampBurnSession(
@@ -39,6 +40,10 @@ export async function readSpendSnapshot(
   userId: string,
 ): Promise<SpendSnapshot> {
   void userId;
+  if (!commandAvailable(config.burnCommand)) {
+    return unavailableSnapshot(config, `${config.burnCommand} unavailable`);
+  }
+
   const sdk = await readSpendSnapshotFromSdk(config).catch(() => null);
   if (sdk) {
     return sdk;
@@ -67,6 +72,7 @@ export async function readSpendSnapshot(
     remainingUsd,
     remainingRatio: budgetUsd > 0 ? remainingUsd / budgetUsd : 0,
     detail: burnScopeDetail(config),
+    tagScope: openKarenBurnTags(config),
   };
 }
 
@@ -151,6 +157,20 @@ export function openKarenBurnTags(config: Pick<OpenKarenConfig, 'stateUserId'>):
   };
 }
 
+export function openKarenBurnStampTags(
+  config: Pick<OpenKarenConfig, 'stateUserId'>,
+  turn: OpenKarenTurn,
+): Record<string, string> {
+  return {
+    ...openKarenBurnTags(config),
+    surface: turn.message.surfaceId,
+    surfaceUserId: turn.message.userId,
+    workflowId: 'openkaren-turn',
+    workflowRunId: turn.message.id,
+    tier: 'hosted-$75',
+  };
+}
+
 export function burnSummaryArgs(config: Pick<OpenKarenConfig, 'stateUserId'>): string[] {
   return [
     'summary',
@@ -171,14 +191,7 @@ async function writeOpenKarenBurnStamp(
     cwd: config.agentCwd,
     spawnerPid: process.pid,
     sessionDirHint: turn.message.sessionId ?? turn.message.id,
-    enrichment: {
-      ...openKarenBurnTags(config),
-      workflowId: 'openkaren-turn',
-      workflowRunId: turn.message.id,
-      surface: turn.message.surfaceId,
-      surfaceUserId: turn.message.userId,
-      tier: 'hosted-$75',
-    },
+    enrichment: openKarenBurnStampTags(config, turn),
   });
 }
 
@@ -200,6 +213,7 @@ async function readSpendSnapshotFromSdk(config: OpenKarenConfig): Promise<SpendS
     remainingUsd,
     remainingRatio: budgetUsd > 0 ? remainingUsd / budgetUsd : 0,
     detail: burnScopeDetail(config),
+    tagScope: openKarenBurnTags(config),
   };
 }
 
@@ -211,7 +225,7 @@ async function ingestOpenKarenBurnLedger(config: OpenKarenConfig): Promise<void>
   void config;
 }
 
-function parseBurnSpend(stdout: string): { spendUsd: number; budgetUsd?: number; totalTokens: number | null } | null {
+export function parseBurnSpend(stdout: string): { spendUsd: number; budgetUsd?: number; totalTokens: number | null } | null {
   const trimmed = stdout.trim();
   if (!trimmed) {
     return null;
@@ -233,6 +247,7 @@ function parseBurnSpend(stdout: string): { spendUsd: number; budgetUsd?: number;
     'monthlySpendUsd',
     'monthlySpend',
     'totalUsd',
+    'totalCost',
     'amountUsd',
     'amount',
   ]);
@@ -338,6 +353,7 @@ function unavailableSnapshot(config: OpenKarenConfig, detail: string): SpendSnap
     remainingUsd: null,
     remainingRatio: null,
     detail,
+    tagScope: openKarenBurnTags(config),
   };
 }
 

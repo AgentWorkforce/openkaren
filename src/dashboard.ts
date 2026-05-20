@@ -1,4 +1,5 @@
 import type { OpenKarenConfig } from './types.js';
+import { tokenToolStatuses, type TokenToolStatus } from './token-tools.js';
 import {
   budgetGateText,
   forecastText,
@@ -14,13 +15,8 @@ export type DashboardData = {
   spendText: string;
   forecastText: string;
   budgetGate: string | null;
-  tools: {
-    burn: string;
-    rtk: string;
-    tilth: string;
-    wash: string;
-    tokensave: string;
-  };
+  tagScope: Record<string, string>;
+  tools: TokenToolStatus[];
 };
 
 export async function buildDashboardData(
@@ -35,13 +31,8 @@ export async function buildDashboardData(
     spendText: spendText(spend),
     forecastText: forecastText(spend),
     budgetGate: budgetGateText(spend),
-    tools: {
-      burn: config.burnCommand,
-      rtk: config.rtkCommand,
-      tilth: config.tilthCommand,
-      wash: config.washCommand,
-      tokensave: config.tokensaveCommand,
-    },
+    tagScope: spend.tagScope,
+    tools: tokenToolStatuses(config),
   };
 }
 
@@ -212,6 +203,10 @@ export function renderDashboard(data: DashboardData): string {
         <div class="muted">${escapeHtml(spend.detail)}</div>
       </div>
       <div class="panel wide">
+        <h2>Tag Scope</h2>
+        <pre>${escapeHtml(formatTagScope(data.tagScope))}</pre>
+      </div>
+      <div class="panel wide">
         <h2>Budget</h2>
         <div class="bar" aria-label="Budget usage"><div class="fill"></div></div>
         <pre>${escapeHtml(data.spendText)}</pre>
@@ -223,11 +218,7 @@ export function renderDashboard(data: DashboardData): string {
       <div class="panel wide">
         <h2>Token Tools</h2>
         <div class="tools">
-          ${toolHtml('burn', data.tools.burn)}
-          ${toolHtml('rtk', data.tools.rtk)}
-          ${toolHtml('tilth', data.tools.tilth)}
-          ${toolHtml('wash', data.tools.wash)}
-          ${toolHtml('tokensave', data.tools.tokensave)}
+          ${data.tools.map(toolHtml).join('')}
         </div>
       </div>
     </section>
@@ -236,8 +227,14 @@ export function renderDashboard(data: DashboardData): string {
 </html>`;
 }
 
-function toolHtml(label: string, value: string): string {
-  return `<div class="tool"><b>${escapeHtml(label)}</b><span class="muted">${escapeHtml(value)}</span></div>`;
+function toolHtml(tool: TokenToolStatus): string {
+  return `<div class="tool"><b>${escapeHtml(tool.id)}: ${escapeHtml(tool.state)}</b><span class="muted">${escapeHtml(tool.detail)}</span></div>`;
+}
+
+function formatTagScope(tags: Record<string, string>): string {
+  return Object.entries(tags)
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n');
 }
 
 function formatUsd(value: number): string {
