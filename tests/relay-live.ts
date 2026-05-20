@@ -103,7 +103,7 @@ function liveConfig(dataDir: string, agentCwd: string): OpenKarenConfig {
     agentRelayIdleThresholdSecs: 5,
     agentRelayProgressIntervalMs: 120_000,
     questionRouterModel: null,
-    openaiApiKey: null,
+    questionRouterCli: 'codex',
     dataDir,
     pollTimeoutSeconds: 1,
   };

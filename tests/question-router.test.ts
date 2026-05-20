@@ -2,7 +2,7 @@ import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createOpenKaren } from '../src/assistant.js';
-import { parseQuestionRouterDecision } from '../src/question-router.js';
+import { parseQuestionRouterDecision, setQuestionRouterHarnessRunnerForTesting } from '../src/question-router.js';
 import type { OpenKarenConfig, QuestionRouterDecision } from '../src/types.js';
 
 assertDecision(
@@ -365,22 +365,20 @@ async function runTelegramRouterScenario(
   const routerRequests: unknown[] = [];
   let getUpdatesCalls = 0;
 
+  setQuestionRouterHarnessRunnerForTesting(async (prompt) => {
+    routerRequests.push(prompt);
+    return JSON.stringify(options.routerDecision ?? {
+      route: 'direct_answer',
+      intent: 'general',
+    });
+  });
+
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string'
       ? input
       : input instanceof URL
         ? input.href
         : input.url;
-
-    if (url === 'https://api.openai.com/v1/responses') {
-      routerRequests.push(JSON.parse(String(init?.body ?? '{}')) as unknown);
-      return jsonResponse({
-        output_text: JSON.stringify(options.routerDecision ?? {
-          route: 'direct_answer',
-          intent: 'general',
-        }),
-      });
-    }
 
     const telegramMatch = url.match(/^http:\/\/telegram\.local\/bot([^/]+)\/([^/]+)$/);
     if (!telegramMatch) {
@@ -442,6 +440,7 @@ async function runTelegramRouterScenario(
   } finally {
     await runtime.stop().catch(() => {});
     globalThis.fetch = originalFetch;
+    setQuestionRouterHarnessRunnerForTesting(null);
     await rm(dataDir, { recursive: true, force: true });
   }
 }
@@ -496,7 +495,7 @@ function testConfig(dataDir: string, routerEnabled: boolean): OpenKarenConfig {
     agentRelayIdleThresholdSecs: 20,
     agentRelayProgressIntervalMs: 120_000,
     questionRouterModel: routerEnabled ? 'gpt-test-router' : null,
-    openaiApiKey: routerEnabled ? 'sk-test' : null,
+    questionRouterCli: 'codex',
     dataDir,
     pollTimeoutSeconds: 1,
   };

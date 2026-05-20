@@ -1151,7 +1151,7 @@ async function routeQuestion(
 ): Promise<QuestionRoute> {
   const forcedChatRoute = forcedCasualChatRoute(text);
 
-  if (!config.openaiApiKey || !config.questionRouterModel) {
+  if (!config.questionRouterModel) {
     return forcedChatRoute ?? fallbackQuestionRoute(text);
   }
 

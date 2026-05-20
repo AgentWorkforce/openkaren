@@ -205,7 +205,7 @@ function testConfig(dataDir: string): OpenKarenConfig {
     agentRelayIdleThresholdSecs: 1,
     agentRelayProgressIntervalMs: 120_000,
     questionRouterModel: null,
-    openaiApiKey: null,
+    questionRouterCli: 'codex',
     dataDir,
     pollTimeoutSeconds: 1,
   };

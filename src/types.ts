@@ -50,7 +50,7 @@ export type OpenKarenConfig = {
   agentRelayIdleThresholdSecs: number;
   agentRelayProgressIntervalMs: number;
   questionRouterModel: string | null;
-  openaiApiKey: string | null;
+  questionRouterCli: string | null;
   dataDir: string;
   pollTimeoutSeconds: number;
 };
