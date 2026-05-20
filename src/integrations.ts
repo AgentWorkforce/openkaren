@@ -84,7 +84,7 @@ export function integrationStatuses(config: OpenKarenConfig): IntegrationStatus[
       label: 'durable-state',
       state: config.stateWorkerUrl ? 'wired' : 'configured',
       detail: config.stateWorkerUrl
-        ? `KarenUserDO proxy ${config.stateWorkerUrl} for user ${config.stateUserId}`
+        ? `KarenUserDO proxy ${config.stateWorkerUrl} for user ${config.stateUserId}; auth ${config.stateWorkerAuthToken ? 'bearer token set' : 'missing local bearer token'}`
         : 'local in-memory state adapter active; set OPENKAREN_STATE_WORKER_URL for KarenUserDO',
     },
     {
@@ -180,7 +180,7 @@ export function integrationPrompt(config: OpenKarenConfig): string {
     relayfilePromptContext(config),
     `- relaycast: use it as the backstage transcript/channel layer when available.`,
     `- relaycron: relay turns register a 2-minute progress schedule when base URL, API key, and webhook URL are configured; otherwise local progress updates are used.`,
-    `- durable-state: ${config.stateWorkerUrl ? 'KarenUserDO is authoritative for sessions, budget, memory, Nango, and workflows' : 'local memory adapter is active until OPENKAREN_STATE_WORKER_URL is configured'}.`,
+    `- durable-state: ${config.stateWorkerUrl ? `KarenUserDO is authoritative for sessions, budget, memory, Nango, and workflows; local client auth is ${config.stateWorkerAuthToken ? 'configured' : 'missing'}` : 'local memory adapter is active until OPENKAREN_STATE_WORKER_URL is configured'}.`,
     `- slack: ${config.slackEnabled ? 'Slack surface is active; reply in-thread and bridge sessions by user identity' : 'Slack surface is inactive; Nango-backed OAuth config can enable it'}.`,
     '- inbox: n8n, Pipedream, and Composio events can POST JSON to /webhooks/inbox when the local webhook listener is exposed.',
     `- nango: Nango connection refresh payloads POST JSON to ${config.nangoWebhookPath}; keep OAuth provider secrets configured through Nango.`,

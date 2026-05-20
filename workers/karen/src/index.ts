@@ -25,8 +25,13 @@ type DurableObjectNamespace<T> = {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === 'GET' && url.pathname === '/health') {
+      return json({ ok: true, auth: authMode(request, env), durableObject: 'KarenUserDO' });
+    }
+
     if (!authorized(request, env)) {
-      return json({ error: 'unauthorized' }, 401);
+      return json({ error: 'unauthorized', auth: authMode(request, env) }, 401);
     }
 
     const userId = request.headers.get('x-openkaren-user-id') || 'local';
@@ -487,6 +492,10 @@ function authorized(request: Request, env: Env): boolean {
 function isLocalDevelopmentUrl(url: string): boolean {
   const hostname = new URL(url).hostname;
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+}
+
+function authMode(request: Request, env: Env): 'local-dev' | 'token' {
+  return isLocalDevelopmentUrl(request.url) && !env.KAREN_STATE_TOKEN ? 'local-dev' : 'token';
 }
 
 function json(body: unknown, status = 200): Response {

@@ -17,6 +17,8 @@
     "dev": "npm run dev:watch",
     "dev:once": "tsx src/cli.ts start",
     "dev:watch": "tsx watch --clear-screen=false --exclude .openkaren --exclude dist src/cli.ts start",
+    "dev:worker": "wrangler dev workers/karen/src/index.ts --config workers/karen/wrangler.toml --local",
+    "test:worker-health": "env -u NODE_OPTIONS node --import tsx tests/worker-health.ts",
     "test:config": "node --import tsx tests/config-defaults.ts",
     "test:acknowledgements": "node --import tsx tests/acknowledgements.ts",
     "test:agent-runner": "node --import tsx tests/agent-runner.ts",
@@ -44,7 +46,7 @@
     "test:redaction": "env -u NODE_OPTIONS node --import tsx tests/redaction.ts",
     "test:e2e:telegram": "node --import tsx tests/telegram-e2e.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test:spec": "npm run typecheck && npm run test:worker-typecheck && npm run test:state && npm run test:worker-state && npm run test:assistant-relay-lifecycle && npm run test:slack && npm run test:automation-mesh && npm run test:ricky-sdk && npm run test:integrations && npm run test:config && npm run test:agent-runner && npm run test:relaycron && npm run test:relaycron-webhook && npm run test:relayfile && npm run test:startup-resilience && npm run test:telegram-greeting && npm run test:recent-changes-chat && npm run test:e2e:telegram && npm run test:token-consciousness && npm run test:token-tools && npm run test:setup-token-tools && npm run test:doctor && npm run test:redaction && npm run test:routing && npm run test:acknowledgements"
+    "test:spec": "npm run typecheck && npm run test:worker-typecheck && npm run test:state && npm run test:worker-state && npm run test:worker-health && npm run test:assistant-relay-lifecycle && npm run test:slack && npm run test:automation-mesh && npm run test:ricky-sdk && npm run test:integrations && npm run test:config && npm run test:agent-runner && npm run test:relaycron && npm run test:relaycron-webhook && npm run test:relayfile && npm run test:startup-resilience && npm run test:telegram-greeting && npm run test:recent-changes-chat && npm run test:e2e:telegram && npm run test:token-consciousness && npm run test:token-tools && npm run test:setup-token-tools && npm run test:doctor && npm run test:redaction && npm run test:routing && npm run test:acknowledgements"
   },
   "dependencies": {
     "@agent-assistant/sdk": "^0.4.33",

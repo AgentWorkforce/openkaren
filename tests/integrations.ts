@@ -63,6 +63,9 @@ try {
   if (!statusText.includes(`nango: configured; OAuth provider config present; connection refresh webhook at ${config.nangoWebhookPath}`)) {
     throw new Error(`Expected Nango status to expose the configured webhook path: ${statusText}`);
   }
+  if (!statusText.includes('durable-state: wired; KarenUserDO proxy https://state.example for user operator-1; auth bearer token set')) {
+    throw new Error(`Expected durable-state status to expose worker auth posture: ${statusText}`);
+  }
 
   const prompt = integrationPrompt(config);
   if (!prompt.includes('relaycron') || !prompt.includes('tokensave') || !prompt.includes('/webhooks/inbox')) {
@@ -111,6 +114,9 @@ function testConfig(dataDir: string, relayfileMountDir: string): OpenKarenConfig
     nangoBaseUrl: 'http://127.0.0.1:3003',
     nangoSecretKey: 'secret',
     nangoWebhookPath: '/webhooks/nango',
+    stateWorkerUrl: 'https://state.example',
+    stateWorkerAuthToken: 'token-123',
+    stateUserId: 'operator-1',
     rtkCommand: 'rtk',
     tilthCommand: 'tilth',
     burnCommand: 'burn',

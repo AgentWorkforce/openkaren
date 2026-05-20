@@ -26,6 +26,7 @@ try {
   assertEqual(config.dashboardEnabled, true, 'default dashboard enabled');
   assertEqual(config.dashboardPath, '/dashboard', 'default dashboard path');
   assertEqual(config.stateWorkerUrl, null, 'default state worker url');
+  assertEqual(config.stateWorkerAuthToken, null, 'default state worker auth token');
   assertEqual(config.stateUserId, 'local', 'default state user id');
   assertEqual(config.identityBridgeMappings.size, 0, 'default identity bridge mapping count');
   assertEqual(config.slackEnabled, false, 'default slack enabled');

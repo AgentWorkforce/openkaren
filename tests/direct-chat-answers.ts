@@ -93,7 +93,7 @@ try {
   }
 
   const fallbackReply = await chatReply('Yo yo', config, mockState, null);
-  if (!fallbackReply.includes('quickest grounded read I can give from local context') || !fallbackReply.includes('- key wiring:')) {
+  if (!fallbackReply.includes('quick read I can give from local context') || !fallbackReply.includes('- key wiring:')) {
     throw new Error(`Expected generalized local-context reply, got: ${fallbackReply}`);
   }
 
@@ -103,8 +103,17 @@ try {
   }
 
   const status = statusText({ ...config, slackEnabled: true }, null);
-  if (!status.includes('active surfaces: telegram, slack') || !status.includes('bridge mode: explicit mapping')) {
-    throw new Error(`Expected /status active surfaces and bridge mode, got: ${status}`);
+  if (
+    !status.includes('active surfaces: telegram, slack') ||
+    !status.includes('bridge mode: explicit mapping') ||
+    !status.includes('state backend: local in-memory fallback')
+  ) {
+    throw new Error(`Expected /status active surfaces, bridge mode, and state backend, got: ${status}`);
+  }
+
+  const workerStatus = statusText({ ...config, stateWorkerUrl: 'https://state.example', stateWorkerAuthToken: null }, null);
+  if (!workerStatus.includes('state backend: worker (https://state.example, auth missing)')) {
+    throw new Error(`Expected worker-backed status text, got: ${workerStatus}`);
   }
 
   const recentReply = await chatReply('What changed recently?', config, mockState, null);

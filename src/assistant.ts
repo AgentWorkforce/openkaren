@@ -1743,6 +1743,7 @@ export function statusText(
     `mode: ${config.agentMode}`,
     `active surfaces: ${activeSurfaces(config).join(', ')}`,
     `bridge mode: ${bridgeMode(config.identityBridgeMappings)}`,
+    `state backend: ${stateBackendSummary(config)}`,
     activeCodingTurn
       ? `active: yes (${activeCodingTurn.surfaceId}:${activeCodingTurn.targetId}, ${activeCodingTurn.startedAt}, ${activeLifecycleText(activeCodingTurn)})`
       : 'active: no',
@@ -1764,6 +1765,14 @@ export function statusText(
   }
 
   return lines.join('\n');
+}
+
+function stateBackendSummary(config: OpenKarenConfig): string {
+  if (!config.stateWorkerUrl) {
+    return 'local in-memory fallback';
+  }
+
+  return `worker (${config.stateWorkerUrl}, auth ${config.stateWorkerAuthToken ? 'configured' : 'missing'})`;
 }
 
 function activeLifecycleText(activeCodingTurn: ActiveCodingTurn): string {
