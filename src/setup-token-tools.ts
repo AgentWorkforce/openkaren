@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { commandAvailable, rtkStatus } from './token-tools.js';
+import { redactSecretText } from './redaction.js';
 
 export type SetupTokenToolsOptions = {
   cwd: string;
@@ -59,7 +60,7 @@ export function formatSetupTokenToolsResult(result: SetupTokenToolsResult): stri
           : step.status === 'skip'
             ? 'skip'
             : 'failed';
-      return `${marker} ${step.tool}: ${step.action} - ${step.detail}`;
+      return `${marker} ${step.tool}: ${step.action} - ${redactSecretText(step.detail)}`;
     }),
   ].join('\n');
 }
@@ -219,7 +220,7 @@ function runStep(
     result.error?.message,
     result.stderr?.trim(),
   ].filter(Boolean).join(': ');
-  steps.push({ tool, action, status: 'failed', detail });
+  steps.push({ tool, action, status: 'failed', detail: redactSecretText(detail) });
 }
 
 function installHint(tool: 'rtk' | 'tokensave'): string {

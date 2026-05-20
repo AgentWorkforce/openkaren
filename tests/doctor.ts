@@ -6,11 +6,16 @@ import { runDoctor } from '../src/doctor.js';
 
 const baseEnv = {
   ...process.env,
+  NODE_OPTIONS: '',
   OPENKAREN_DASHBOARD_ENABLED: 'false',
   OPENKAREN_RTK_COMMAND: 'definitely-missing-openkaren-rtk',
   OPENKAREN_TOKENSAVE_COMMAND: 'definitely-missing-openkaren-tokensave',
   OPENKAREN_BURN_COMMAND: 'definitely-missing-openkaren-burn',
   OPENKAREN_SLACK_ENABLED: 'false',
+  OPENKAREN_ENV_FILE: './definitely-missing-openkaren-env-file',
+  TELEGRAM_BOT_TOKEN: '',
+  TELEGRAM_ALLOWED_CHAT_IDS: '',
+  OPENKAREN_SLACK_ALLOWED_CHANNEL_IDS: '',
 };
 
 const report = await runDoctor({
@@ -33,6 +38,14 @@ if (telegram?.severity !== 'optional' || telegram.status !== 'warn') {
   throw new Error(`Expected missing Telegram config to be optional warning, got ${JSON.stringify(telegram)}`);
 }
 
+const telegramAllowlist = report.sections.config.find((check) => check.id === 'telegram-allowlist');
+if (
+  telegramAllowlist?.status !== 'warn' ||
+  !telegramAllowlist.message.includes('TELEGRAM_ALLOWED_CHAT_IDS is empty')
+) {
+  throw new Error(`Expected empty Telegram allowlist warning, got ${JSON.stringify(telegramAllowlist)}`);
+}
+
 const missingSlackSigningSecret = await runDoctor({
   cwd: process.cwd(),
   env: {
@@ -50,6 +63,50 @@ if (
   !slack.remediation?.includes('OPENKAREN_SLACK_SIGNING_SECRET')
 ) {
   throw new Error(`Expected enabled Slack without signing secret to warn with missing key, got ${JSON.stringify(slack)}`);
+}
+const slackAllowlist = missingSlackSigningSecret.sections.config.find((check) => check.id === 'slack-channel-allowlist');
+if (slackAllowlist?.status !== 'warn' || !slackAllowlist.message.includes('OPENKAREN_SLACK_ALLOWED_CHANNEL_IDS is empty')) {
+  throw new Error(`Expected enabled Slack without channel allowlist to warn, got ${JSON.stringify(slackAllowlist)}`);
+}
+
+const unsafeDashboard = await runDoctor({
+  cwd: process.cwd(),
+  env: {
+    ...baseEnv,
+    OPENKAREN_DASHBOARD_ENABLED: 'true',
+    OPENKAREN_RELAYCAST_HOST: '0.0.0.0',
+  },
+});
+const dashboard = unsafeDashboard.sections.config.find((check) => check.id === 'dashboard');
+if (dashboard?.status !== 'warn' || !dashboard.message.includes('not localhost-bound')) {
+  throw new Error(`Expected non-localhost dashboard warning, got ${JSON.stringify(dashboard)}`);
+}
+
+const dashboardOffSwitch = await runDoctor({
+  cwd: process.cwd(),
+  env: {
+    ...baseEnv,
+    OPENKAREN_DASHBOARD: 'off',
+    OPENKAREN_DASHBOARD_ENABLED: '',
+    OPENKAREN_RELAYCAST_HOST: '0.0.0.0',
+  },
+});
+const disabledDashboard = dashboardOffSwitch.sections.config.find((check) => check.id === 'dashboard');
+if (disabledDashboard?.status !== 'pass' || disabledDashboard.message !== 'dashboard disabled') {
+  throw new Error(`Expected OPENKAREN_DASHBOARD=off to disable dashboard warnings, got ${JSON.stringify(disabledDashboard)}`);
+}
+
+const redacted = await runDoctor({
+  cwd: process.cwd(),
+  env: {
+    ...baseEnv,
+    NANGO_BASE_URL: 'https://nango.example',
+    NANGO_SECRET_KEY: 'nango_secret_abcdefghijklmnopqrstuvwxyz',
+  },
+});
+const redactedJson = JSON.stringify(redacted);
+if (redactedJson.includes('nango_secret_abcdefghijklmnopqrstuvwxyz')) {
+  throw new Error(`Expected doctor JSON to redact secret-shaped values, got ${redactedJson}`);
 }
 
 const tmp = await mkdtemp(join(tmpdir(), 'openkaren-doctor-'));

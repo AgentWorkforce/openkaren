@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { commandAvailable, rtkStatus } from './token-tools.js';
+import { redactSecretText } from './redaction.js';
 
 export type DoctorSeverity = 'required' | 'optional';
 export type DoctorStatus = 'pass' | 'warn' | 'fail';
@@ -127,7 +128,7 @@ async function runtimeChecks(context: DoctorEnv): Promise<DoctorCheck[]> {
 }
 
 async function configChecks(context: DoctorEnv): Promise<DoctorCheck[]> {
-  const dashboardEnabled = booleanEnv(context.env.OPENKAREN_DASHBOARD_ENABLED ?? 'true');
+  const dashboardEnabled = parseDashboardEnabled(context.env);
   const dashboardPath = context.env.OPENKAREN_DASHBOARD_PATH?.trim() || DEFAULT_DASHBOARD_PATH;
   const relaycastHost = context.env.OPENKAREN_RELAYCAST_HOST?.trim() || DEFAULT_RELAYCAST_HOST;
   const relaycastPort = positiveInt(context.env.OPENKAREN_RELAYCAST_PORT, DEFAULT_RELAYCAST_PORT);
@@ -137,6 +138,8 @@ async function configChecks(context: DoctorEnv): Promise<DoctorCheck[]> {
   const stateWorkerUrl = optionalEnv(context.env.OPENKAREN_STATE_WORKER_URL);
   const slackEnabled = booleanEnv(context.env.OPENKAREN_SLACK_ENABLED);
   const missingSlackKeys = slackEnabled ? missingEnabledSlackKeys(context.env) : [];
+  const telegramAllowlist = parseListEnv(context.env.TELEGRAM_ALLOWED_CHAT_IDS);
+  const slackAllowlist = parseListEnv(context.env.OPENKAREN_SLACK_ALLOWED_CHANNEL_IDS);
   const nangoBaseUrl = optionalEnv(context.env.NANGO_BASE_URL ?? context.env.OPENKAREN_NANGO_BASE_URL);
   const nangoSecret = optionalEnv(context.env.NANGO_SECRET_KEY ?? context.env.OPENKAREN_NANGO_SECRET_KEY);
 
@@ -152,15 +155,27 @@ async function configChecks(context: DoctorEnv): Promise<DoctorCheck[]> {
       'set TELEGRAM_BOT_TOKEN before running `karen start`',
     ),
     check(
+      'telegram-allowlist',
+      'Telegram allowlist',
+      'optional',
+      telegramAllowlist.length > 0 ? 'pass' : 'warn',
+      telegramAllowlist.length > 0
+        ? `TELEGRAM_ALLOWED_CHAT_IDS contains ${telegramAllowlist.length} chat id${telegramAllowlist.length === 1 ? '' : 's'}`
+        : 'TELEGRAM_ALLOWED_CHAT_IDS is empty; any Telegram chat can reach this instance',
+      'set TELEGRAM_ALLOWED_CHAT_IDS to the trusted chat ids before using real accounts',
+    ),
+    check(
       'dashboard',
       'dashboard port/path',
       'optional',
-      dashboardEnabled && (!dashboardPath.startsWith('/') || !portAvailable) ? 'warn' : 'pass',
+      dashboardEnabled && (!dashboardPath.startsWith('/') || !portAvailable || !isLocalhost(relaycastHost))
+        ? 'warn'
+        : 'pass',
       dashboardEnabled
-        ? `${relaycastHost}:${relaycastPort}${dashboardPath} ${portAvailable ? 'is available' : 'is already in use'}`
+        ? `${relaycastHost}:${relaycastPort}${dashboardPath} ${portAvailable ? 'is available' : 'is already in use'}; ${isLocalhost(relaycastHost) ? 'localhost-only' : 'not localhost-bound'}`
         : 'dashboard disabled',
       dashboardPath.startsWith('/')
-        ? 'free the port or set OPENKAREN_RELAYCAST_PORT'
+        ? 'keep OPENKAREN_RELAYCAST_HOST on 127.0.0.1/localhost for production, set OPENKAREN_DASHBOARD=off, or set OPENKAREN_DASHBOARD_ENABLED=false'
         : 'set OPENKAREN_DASHBOARD_PATH to a path starting with /',
     ),
     check(
@@ -174,6 +189,18 @@ async function configChecks(context: DoctorEnv): Promise<DoctorCheck[]> {
         ? 'state worker URL configured'
         : 'local in-memory state adapter active',
       'set OPENKAREN_STATE_AUTH_TOKEN or KAREN_STATE_TOKEN when OPENKAREN_STATE_WORKER_URL is set',
+    ),
+    check(
+      'slack-channel-allowlist',
+      'Slack channel allowlist',
+      'optional',
+      !slackEnabled || slackAllowlist.length > 0 ? 'pass' : 'warn',
+      slackEnabled
+        ? slackAllowlist.length > 0
+          ? `OPENKAREN_SLACK_ALLOWED_CHANNEL_IDS contains ${slackAllowlist.length} channel${slackAllowlist.length === 1 ? '' : 's'}`
+          : 'OPENKAREN_SLACK_ALLOWED_CHANNEL_IDS is empty; all signed Slack channels are accepted'
+        : 'Slack surface disabled',
+      'set OPENKAREN_SLACK_ALLOWED_CHANNEL_IDS to trusted channel ids when enabling Slack',
     ),
     check(
       'slack',
@@ -333,8 +360,8 @@ function check(
   remediation?: string,
 ): DoctorCheck {
   return remediation && status !== 'pass'
-    ? { id, label, severity, status, message, remediation }
-    : { id, label, severity, status, message };
+    ? { id, label, severity, status, message: redactSecretText(message), remediation: redactSecretText(remediation) }
+    : { id, label, severity, status, message: redactSecretText(message) };
 }
 
 function resolveDoctorEnv(env: NodeJS.ProcessEnv, cwd: string): NodeJS.ProcessEnv {
@@ -397,8 +424,27 @@ function optionalEnv(value: string | undefined): string | null {
   return trimmed ? trimmed : null;
 }
 
+function parseListEnv(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function isLocalhost(host: string): boolean {
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
 function booleanEnv(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(value?.trim().toLowerCase() ?? '');
+}
+
+function parseDashboardEnabled(env: NodeJS.ProcessEnv): boolean {
+  const switchValue = env.OPENKAREN_DASHBOARD?.trim().toLowerCase();
+  if (switchValue === 'off' || switchValue === 'false' || switchValue === '0') {
+    return false;
+  }
+  return booleanEnv(env.OPENKAREN_DASHBOARD_ENABLED ?? 'true');
 }
 
 function missingEnabledSlackKeys(env: NodeJS.ProcessEnv): string[] {
@@ -498,7 +544,7 @@ function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv = pr
   });
   return {
     status: result.status,
-    output: `${result.stdout ?? ''}\n${result.stderr ?? ''}`.trim(),
+    output: redactSecretText(`${result.stdout ?? ''}\n${result.stderr ?? ''}`.trim()),
   };
 }
 
