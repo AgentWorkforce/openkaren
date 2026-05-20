@@ -66,8 +66,8 @@ await assertTelegramRouterScenario('/status', {
     reason: 'would be wrong if called',
   },
   verify(result) {
-    if (result.routerRequests.length !== 0) {
-      throw new Error(`Expected hard slash command to bypass router, got ${result.routerRequests.length} router calls`);
+    if (result.decisionRequests.length !== 0) {
+      throw new Error(`Expected hard slash command to bypass harness decision, got ${result.decisionRequests.length} router calls`);
     }
     if (!String(result.sentMessages[0]?.text ?? '').includes('Status')) {
       throw new Error(`Expected /status reply, got: ${String(result.sentMessages[0]?.text)}`);
@@ -82,8 +82,8 @@ await assertTelegramRouterScenario('How is OpenKaren built?', {
     reason: 'architecture question',
   },
   verify(result) {
-    if (result.routerRequests.length !== 1) {
-      throw new Error(`Expected one router request, got ${result.routerRequests.length}`);
+    if (result.decisionRequests.length !== 1) {
+      throw new Error(`Expected one harness decision request, got ${result.decisionRequests.length}`);
     }
     if (!String(result.sentMessages[0]?.text ?? '').includes('more app-shaped than product-clean')) {
       throw new Error(`Expected architecture reply, got: ${String(result.sentMessages[0]?.text)}`);
@@ -101,8 +101,8 @@ await assertTelegramRouterScenario('What changed recently?', {
     reason: 'recent activity question',
   },
   verify(result) {
-    if (result.routerRequests.length !== 1) {
-      throw new Error(`Expected one router request for recent activity, got ${result.routerRequests.length}`);
+    if (result.decisionRequests.length !== 1) {
+      throw new Error(`Expected one harness decision request for recent activity, got ${result.decisionRequests.length}`);
     }
     const reply = String(result.sentMessages[0]?.text ?? '');
     if (!reply.includes('quick read on recent activity') || !reply.includes('latest repo commit')) {
@@ -141,8 +141,8 @@ await assertTelegramRouterScenario('Can you spawn a codex agent to dig into rece
   },
   expectedMessages: 2,
   verify(result) {
-    if (result.routerRequests.length !== 1) {
-      throw new Error(`Expected one router request for semantic delegation prompt, got ${result.routerRequests.length}`);
+    if (result.decisionRequests.length !== 1) {
+      throw new Error(`Expected one harness decision request for semantic delegation prompt, got ${result.decisionRequests.length}`);
     }
     const ack = String(result.sentMessages[0]?.text ?? '');
     if (!/Checking the damage|I see the problem|This smells fixable|I will make it less wrong|Taking it apart now/.test(ack)) {
@@ -177,10 +177,10 @@ await assertTelegramRouterScenario('That thing?', {
 });
 
 await assertTelegramRouterScenario('How fully integrated is agent assistant?', {
-  routerEnabled: false,
+  decisionEnabled: false,
   verify(result) {
-    if (result.routerRequests.length !== 0) {
-      throw new Error(`Expected no router requests when disabled, got ${result.routerRequests.length}`);
+    if (result.decisionRequests.length !== 0) {
+      throw new Error(`Expected no harness decision requests when disabled, got ${result.decisionRequests.length}`);
     }
     const reply = String(result.sentMessages[0]?.text ?? '');
     if (!reply.includes('deeply integrated here, but not cleanly enough yet') || !reply.includes('operationally real, not cosmetic')) {
@@ -190,10 +190,10 @@ await assertTelegramRouterScenario('How fully integrated is agent assistant?', {
 });
 
 await assertTelegramRouterScenario('How can we improve the integration?', {
-  routerEnabled: false,
+  decisionEnabled: false,
   verify(result) {
-    if (result.routerRequests.length !== 0) {
-      throw new Error(`Expected no router requests when disabled, got ${result.routerRequests.length}`);
+    if (result.decisionRequests.length !== 0) {
+      throw new Error(`Expected no harness decision requests when disabled, got ${result.decisionRequests.length}`);
     }
     const reply = String(result.sentMessages[0]?.text ?? '');
     if (!reply.includes('biggest gap is not whether the integration is real') || !reply.includes('I would tighten it in this order:')) {
@@ -212,8 +212,8 @@ await assertTelegramRouterScenario('/do say hello', {
   },
   expectedMessages: 2,
   verify(result) {
-    if (result.routerRequests.length !== 0) {
-      throw new Error(`Expected /do to bypass router, got ${result.routerRequests.length} router calls`);
+    if (result.decisionRequests.length !== 0) {
+      throw new Error(`Expected /do to bypass harness decision, got ${result.decisionRequests.length} router calls`);
     }
     const ack = String(result.sentMessages[0]?.text ?? '');
     if (!/Queue mode is on, so I am dropping it into the local execution inbox\./.test(ack)) {
@@ -240,8 +240,8 @@ await assertTelegramRouterScenario('/help', {
     reason: 'would be wrong if called',
   },
   verify(result) {
-    if (result.routerRequests.length !== 0) {
-      throw new Error(`Expected /help to bypass router, got ${result.routerRequests.length} router calls`);
+    if (result.decisionRequests.length !== 0) {
+      throw new Error(`Expected /help to bypass harness decision, got ${result.decisionRequests.length} router calls`);
     }
     if (result.queuedItems.length !== 0) {
       throw new Error(`Expected no queued items for /help, got ${result.queuedItems.length}`);
@@ -272,8 +272,8 @@ await assertTelegramRouterScenario('/start', {
     reason: 'would be wrong if called',
   },
   verify(result) {
-    if (result.routerRequests.length !== 0) {
-      throw new Error(`Expected /start to bypass router, got ${result.routerRequests.length} router calls`);
+    if (result.decisionRequests.length !== 0) {
+      throw new Error(`Expected /start to bypass harness decision, got ${result.decisionRequests.length} router calls`);
     }
     if (result.queuedItems.length !== 0) {
       throw new Error(`Expected no queued items for /start, got ${result.queuedItems.length}`);
@@ -291,8 +291,8 @@ await assertTelegramRouterScenario('/dashboard', {
     reason: 'would be wrong if called',
   },
   verify(result) {
-    if (result.routerRequests.length !== 0) {
-      throw new Error(`Expected /dashboard to bypass router, got ${result.routerRequests.length} router calls`);
+    if (result.decisionRequests.length !== 0) {
+      throw new Error(`Expected /dashboard to bypass harness decision, got ${result.decisionRequests.length} router calls`);
     }
     if (result.queuedItems.length !== 0) {
       throw new Error(`Expected no queued items for /dashboard, got ${result.queuedItems.length}`);
@@ -310,8 +310,8 @@ await assertTelegramRouterScenario('/doctor', {
     reason: 'would be wrong if called',
   },
   verify(result) {
-    if (result.routerRequests.length !== 0) {
-      throw new Error(`Expected /doctor to bypass router, got ${result.routerRequests.length} router calls`);
+    if (result.decisionRequests.length !== 0) {
+      throw new Error(`Expected /doctor to bypass harness decision, got ${result.decisionRequests.length} router calls`);
     }
     if (result.queuedItems.length !== 0) {
       throw new Error(`Expected no queued items for /doctor, got ${result.queuedItems.length}`);
@@ -327,16 +327,16 @@ console.log('question router runtime ok');
 
 if (process.env.VITEST === 'true') {
   const vitest = await import('vitest');
-  vitest.test('question-router runtime', () => {});
+  vitest.test('message decision runtime', () => {});
 }
 
 type RouterScenarioOptions = {
   routerDecision?: QuestionRouterDecision;
-  routerEnabled?: boolean;
+  decisionEnabled?: boolean;
   expectedMessages?: number;
   verify: (result: {
     sentMessages: TelegramPayload[];
-    routerRequests: unknown[];
+    decisionRequests: unknown[];
     queuedItems: Array<{ text?: string }>;
   }) => void;
 };
@@ -356,17 +356,17 @@ async function runTelegramRouterScenario(
   options: Omit<RouterScenarioOptions, 'verify'>,
 ): Promise<{
   sentMessages: TelegramPayload[];
-  routerRequests: unknown[];
+  decisionRequests: unknown[];
   queuedItems: Array<{ text?: string }>;
 }> {
   const originalFetch = globalThis.fetch;
   const dataDir = await mkdtemp(join(tmpdir(), 'openkaren-router-runtime-'));
   const sentMessages: TelegramPayload[] = [];
-  const routerRequests: unknown[] = [];
+  const decisionRequests: unknown[] = [];
   let getUpdatesCalls = 0;
 
   setQuestionRouterHarnessRunnerForTesting(async (prompt) => {
-    routerRequests.push(prompt);
+    decisionRequests.push(prompt);
     return JSON.stringify(options.routerDecision ?? {
       route: 'direct_answer',
       intent: 'general',
@@ -419,7 +419,7 @@ async function runTelegramRouterScenario(
     throw new Error(`Unexpected Telegram method: ${method}`);
   }) as typeof fetch;
 
-  const runtime = createOpenKaren(testConfig(dataDir, options.routerEnabled !== false));
+  const runtime = createOpenKaren(testConfig(dataDir, options.decisionEnabled !== false));
   const running = runtime.start();
 
   try {
@@ -434,7 +434,7 @@ async function runTelegramRouterScenario(
 
     return {
       sentMessages,
-      routerRequests,
+      decisionRequests,
       queuedItems: await readQueuedItems(dataDir),
     };
   } finally {
@@ -445,7 +445,7 @@ async function runTelegramRouterScenario(
   }
 }
 
-function testConfig(dataDir: string, routerEnabled: boolean): OpenKarenConfig {
+function testConfig(dataDir: string, decisionEnabled: boolean): OpenKarenConfig {
   return {
     telegramBotToken: 'test-token',
     telegramApiBaseUrl: 'http://telegram.local',
@@ -494,7 +494,7 @@ function testConfig(dataDir: string, routerEnabled: boolean): OpenKarenConfig {
     agentRelayNamePrefix: 'OpenKarenCoder',
     agentRelayIdleThresholdSecs: 20,
     agentRelayProgressIntervalMs: 120_000,
-    questionRouterModel: routerEnabled ? 'gpt-test-router' : null,
+    questionRouterModel: decisionEnabled ? 'gpt-test-router' : null,
     questionRouterCli: 'codex',
     dataDir,
     pollTimeoutSeconds: 1,

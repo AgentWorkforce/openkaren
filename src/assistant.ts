@@ -116,7 +116,7 @@ type QuestionRoute =
   | {
     kind: 'chat';
     intent: DirectQuestionIntent | 'general' | 'clarify' | null;
-    decidedBy: 'llm' | 'fallback';
+    decidedBy: 'harness' | 'fallback';
     decisionRoute: QuestionRouterDecision['route'];
     semanticIntent?: QuestionRouterIntent;
     reason?: string;
@@ -124,7 +124,7 @@ type QuestionRoute =
   | {
     kind: 'coding';
     intent: 'task';
-    decidedBy: 'llm' | 'fallback';
+    decidedBy: 'harness' | 'fallback';
     decisionRoute: QuestionRouterDecision['route'];
     semanticIntent?: QuestionRouterIntent;
     reason?: string;
@@ -412,8 +412,8 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
             return;
           }
 
-          const route = await routeQuestion(message.text, config, state, activeCodingTurn);
-          console.info('question-router: routed message', {
+          const route = await decideNormalMessageAction(message.text, config, state, activeCodingTurn);
+          console.info('message-decision: routed message', {
             messageId: message.id,
             surfaceId: target.surfaceId,
             targetId: target.targetId,
@@ -1143,7 +1143,7 @@ async function directQuestionReply(
   return await composeDirectQuestionReply(intent, config, state, activeCodingTurn);
 }
 
-async function routeQuestion(
+async function decideNormalMessageAction(
   text: string,
   config: OpenKarenConfig,
   state: KarenStateClient,
@@ -1159,15 +1159,15 @@ async function routeQuestion(
     const packet = await buildLocalContextPacket(config, state, activeCodingTurn);
     const decision = await decideQuestionRoute(text, packet, config);
     if (decision) {
-      return routeFromRouterDecision(decision, 'llm');
+      return routeFromRouterDecision(decision, 'harness');
     }
   } catch (error) {
-    console.warn('question-router: fell back to local heuristics', {
+    console.warn('message-decision: fell back to local heuristics', {
       error: redactError(error),
     });
   }
 
-  console.info('question-router: decided_by=fallback because LLM decision was unavailable');
+  console.info('message-decision: decided_by=fallback because harness decision was unavailable');
   return forcedChatRoute ?? fallbackQuestionRoute(text);
 }
 
@@ -1191,7 +1191,7 @@ function forcedCasualChatRoute(text: string): QuestionRoute | null {
 
 function routeFromRouterDecision(
   decision: QuestionRouterDecision,
-  decidedBy: 'llm' | 'fallback',
+  decidedBy: 'harness' | 'fallback',
 ): QuestionRoute {
   if (decision.route === 'coding_task') {
     return {
