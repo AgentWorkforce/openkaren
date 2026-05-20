@@ -1,4 +1,6 @@
-import { statSync } from 'node:fs';
+import { readdirSync, statSync, type Dirent } from 'node:fs';
+import { join } from 'node:path';
+import { automationMeshHealth, DEFAULT_N8N_ROUTES } from './automation-mesh.js';
 import { relayfilePromptContext } from './relayfile.js';
 import { isRickySdkAvailable } from './ricky.js';
 import { tokenToolsPrompt, tokenToolStatuses } from './token-tools.js';
@@ -13,7 +15,10 @@ export type IntegrationStatus = {
   detail: string;
 };
 
+const RELAYFILE_WATCHED_PROVIDERS = ['github', 'linear', 'notion', 'slack'];
+
 export function integrationStatuses(config: OpenKarenConfig): IntegrationStatus[] {
+  const meshHealth = automationMeshHealth(DEFAULT_N8N_ROUTES);
   return [
     {
       id: 'agent-assistant',
@@ -37,11 +42,20 @@ export function integrationStatuses(config: OpenKarenConfig): IntegrationStatus[
         : config.relayfileBaseUrl && config.relayfileToken
           ? 'configured'
           : 'missing',
-      detail: existsDir(config.relayfileMountDir)
-        ? `mounted at ${config.relayfileMountDir}`
-        : config.relayfileBaseUrl && config.relayfileToken
-          ? `API configured for workspace ${config.relayfileWorkspace}`
-          : `mount missing at ${config.relayfileMountDir}`,
+      detail: relayfileStatusDetail(config),
+    },
+    {
+      id: 'automation-mesh',
+      label: 'automation-mesh',
+      state: meshHealth.state === 'missing' ? 'missing' : 'configured',
+      detail: [
+        `routes=${meshHealth.routeCount}`,
+        `state=${meshHealth.state}`,
+        `watched routes=${meshHealth.routes.join(', ') || 'none'}`,
+        meshHealth.routeCount === 0
+          ? 'action: add n8n routes before forwarding relaycast findings'
+          : 'action: verify the listed n8n webhook URLs are reachable; route misses and last POST errors are logged by deliverRelaycastFindingToN8n',
+      ].join('; '),
     },
     {
       id: 'relaycast',
@@ -104,8 +118,8 @@ export function integrationStatuses(config: OpenKarenConfig): IntegrationStatus[
       label: 'nango',
       state: config.nangoBaseUrl && config.nangoSecretKey ? 'configured' : 'missing',
       detail: config.nangoBaseUrl
-        ? 'OAuth provider config present'
-        : 'optional OAuth backing for relayfile providers not configured',
+        ? `OAuth provider config present; connection refresh webhook at ${config.nangoWebhookPath}`
+        : `optional OAuth backing for relayfile providers not configured; connection refresh webhook path ${config.nangoWebhookPath}`,
     },
     {
       id: 'inbox',
@@ -150,7 +164,7 @@ export function integrationStatuses(config: OpenKarenConfig): IntegrationStatus[
 
 export function integrationStatusText(config: OpenKarenConfig): string {
   return integrationStatuses(config)
-    .map((integration) => `${integration.label}: ${integration.state}`)
+    .map((integration) => `${integration.label}: ${integration.state}; ${integration.detail}`)
     .join('\n');
 }
 
@@ -168,7 +182,8 @@ export function integrationPrompt(config: OpenKarenConfig): string {
     `- relaycron: relay turns register a 2-minute progress schedule when base URL, API key, and webhook URL are configured; otherwise local progress updates are used.`,
     `- durable-state: ${config.stateWorkerUrl ? 'KarenUserDO is authoritative for sessions, budget, memory, Nango, and workflows' : 'local memory adapter is active until OPENKAREN_STATE_WORKER_URL is configured'}.`,
     `- slack: ${config.slackEnabled ? 'Slack surface is active; reply in-thread and bridge sessions by user identity' : 'Slack surface is inactive; Nango-backed OAuth config can enable it'}.`,
-    '- inbox: n8n, Pipedream, Composio, and Nango-style events can POST JSON to /webhooks/inbox when the local webhook listener is exposed.',
+    '- inbox: n8n, Pipedream, and Composio events can POST JSON to /webhooks/inbox when the local webhook listener is exposed.',
+    `- nango: Nango connection refresh payloads POST JSON to ${config.nangoWebhookPath}; keep OAuth provider secrets configured through Nango.`,
     '- ricky: use Karen\'s createOpenKarenRicky(config) SDK adapter for workflow generation/runs when needed; do not shell out to a ricky CLI from worker prompts.',
     `- workforce: prefer personas from ${config.workforcePersonaDir} when selecting specialist roles.`,
     tokenToolsPrompt(config),
@@ -183,4 +198,60 @@ function existsDir(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+function relayfileStatusDetail(config: OpenKarenConfig): string {
+  const mounted = existsDir(config.relayfileMountDir);
+  const apiState = config.relayfileBaseUrl && config.relayfileToken
+    ? `API configured for workspace ${config.relayfileWorkspace}`
+    : 'API credentials missing; set OPENKAREN_RELAYFILE_BASE_URL and RELAYFILE_TOKEN or mount relayfile locally';
+  const recentEvents = mounted ? recentRelayfileEvents(config.relayfileMountDir) : [];
+  return [
+    `path=${config.relayfileMountDir}`,
+    `state=${mounted ? 'exists' : 'missing'}`,
+    apiState,
+    `watched providers=${RELAYFILE_WATCHED_PROVIDERS.join(', ')} plus mounted workspace files`,
+    `recent events=${recentEvents.join(', ') || 'none observed'}`,
+    mounted ? 'action: inspect files under the relayfile mount for provider updates' : 'action: create/mount relayfile path or configure the relayfile API',
+  ].join('; ');
+}
+
+function recentRelayfileEvents(mountDir: string, limit = 3): string[] {
+  return walkRelayfileFiles(mountDir)
+    .sort((left, right) => right.mtimeMs - left.mtimeMs)
+    .slice(0, limit)
+    .map((event) => `${event.relativePath} (${new Date(event.mtimeMs).toISOString()})`);
+}
+
+function walkRelayfileFiles(root: string, relativeRoot = ''): Array<{ relativePath: string; mtimeMs: number }> {
+  let entries: Dirent<string>[];
+  try {
+    entries = readdirSync(join(root, relativeRoot), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const files: Array<{ relativePath: string; mtimeMs: number }> = [];
+  for (const entry of entries) {
+    if (entry.name === '.DS_Store' || entry.name.endsWith('~')) {
+      continue;
+    }
+    const relativePath = relativeRoot ? `${relativeRoot}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      if (entry.name === '.git') {
+        continue;
+      }
+      files.push(...walkRelayfileFiles(root, relativePath));
+      continue;
+    }
+    if (!entry.isFile()) {
+      continue;
+    }
+    try {
+      files.push({ relativePath, mtimeMs: statSync(join(root, relativePath)).mtimeMs });
+    } catch {
+      // The relayfile mount can change while being inspected.
+    }
+  }
+  return files;
 }

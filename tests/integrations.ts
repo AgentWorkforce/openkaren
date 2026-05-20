@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { integrationPrompt, integrationStatuses, integrationStatusText } from '../src/integrations.js';
@@ -8,7 +8,8 @@ const dataDir = await mkdtemp(join(tmpdir(), 'openkaren-integrations-'));
 const relayfileMount = join(dataDir, 'relayfile-mount');
 
 try {
-  await mkdir(relayfileMount);
+  await mkdir(join(relayfileMount, 'github'), { recursive: true });
+  await writeFile(join(relayfileMount, 'github', 'pull-42.json'), JSON.stringify({ title: 'Fix auth' }));
   const config = testConfig(dataDir, relayfileMount);
   const statuses = integrationStatuses(config);
 
@@ -16,6 +17,7 @@ try {
     'agent-assistant',
     'relay',
     'relayfile',
+    'automation-mesh',
     'relaycast',
     'relaycron',
     'durable-state',
@@ -38,16 +40,39 @@ try {
     }
   }
 
-  if (!integrationStatusText(config).includes('relayfile: wired')) {
+  const statusText = integrationStatusText(config);
+  if (!statusText.includes('relayfile: wired')) {
     throw new Error('Expected relayfile wired status');
   }
-  if (!integrationStatusText(config).includes('ricky: wired')) {
+  if (
+    !statusText.includes('path=') ||
+    !statusText.includes('watched providers=github, linear, notion, slack') ||
+    !statusText.includes('recent events=github/pull-42.json')
+  ) {
+    throw new Error(`Expected relayfile path, watched providers, and recent events: ${statusText}`);
+  }
+  if (
+    !statusText.includes('automation-mesh: configured') ||
+    !statusText.includes('route misses and last POST errors are logged')
+  ) {
+    throw new Error(`Expected actionable automation mesh health in integrations: ${statusText}`);
+  }
+  if (!statusText.includes('ricky: wired')) {
     throw new Error('Expected ricky SDK wired status');
+  }
+  if (!statusText.includes(`nango: configured; OAuth provider config present; connection refresh webhook at ${config.nangoWebhookPath}`)) {
+    throw new Error(`Expected Nango status to expose the configured webhook path: ${statusText}`);
   }
 
   const prompt = integrationPrompt(config);
   if (!prompt.includes('relaycron') || !prompt.includes('tokensave') || !prompt.includes('/webhooks/inbox')) {
     throw new Error(`Expected integration prompt to mention scheduler, inbox, and token graph: ${prompt}`);
+  }
+  if (!prompt.includes(`Nango connection refresh payloads POST JSON to ${config.nangoWebhookPath}`)) {
+    throw new Error(`Expected integration prompt to route Nango refreshes to ${config.nangoWebhookPath}: ${prompt}`);
+  }
+  if (prompt.includes('Nango-style events can POST JSON to /webhooks/inbox')) {
+    throw new Error(`Expected integration prompt not to route Nango refreshes through inbox: ${prompt}`);
   }
   if (!prompt.includes('Token tool policy:') || !prompt.includes('RTK') || !prompt.includes('Tilth')) {
     throw new Error(`Expected integration prompt to include token tool policy: ${prompt}`);
@@ -85,6 +110,7 @@ function testConfig(dataDir: string, relayfileMountDir: string): OpenKarenConfig
     ),
     nangoBaseUrl: 'http://127.0.0.1:3003',
     nangoSecretKey: 'secret',
+    nangoWebhookPath: '/webhooks/nango',
     rtkCommand: 'rtk',
     tilthCommand: 'tilth',
     burnCommand: 'burn',
