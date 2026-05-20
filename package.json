@@ -37,9 +37,10 @@
     "test:token-consciousness": "node --import tsx tests/token-consciousness.ts",
     "test:token-tools": "node --import tsx tests/token-tools.ts",
     "test:setup-token-tools": "node --import tsx tests/setup-token-tools.ts",
+    "test:doctor": "node --import tsx tests/doctor.ts",
     "test:e2e:telegram": "node --import tsx tests/telegram-e2e.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test:spec": "npm run typecheck && npm run test:worker-typecheck && npm run test:state && npm run test:slack && npm run test:automation-mesh && npm run test:ricky-sdk && npm run test:integrations && npm run test:config && npm run test:agent-runner && npm run test:relaycron && npm run test:relaycron-webhook && npm run test:relayfile && npm run test:startup-resilience && npm run test:telegram-greeting && npm run test:recent-changes-chat && npm run test:e2e:telegram && npm run test:token-consciousness && npm run test:token-tools && npm run test:setup-token-tools && npm run test:routing && npm run test:acknowledgements"
+    "test:spec": "npm run typecheck && npm run test:worker-typecheck && npm run test:state && npm run test:slack && npm run test:automation-mesh && npm run test:ricky-sdk && npm run test:integrations && npm run test:config && npm run test:agent-runner && npm run test:relaycron && npm run test:relaycron-webhook && npm run test:relayfile && npm run test:startup-resilience && npm run test:telegram-greeting && npm run test:recent-changes-chat && npm run test:e2e:telegram && npm run test:token-consciousness && npm run test:token-tools && npm run test:setup-token-tools && npm run test:doctor && npm run test:routing && npm run test:acknowledgements"
   },
   "dependencies": {
     "@agent-assistant/sdk": "^0.4.33",

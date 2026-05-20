@@ -19,6 +19,10 @@ export function tokenToolStatuses(config: OpenKarenConfig): TokenToolStatus[] {
   ];
 }
 
+export type CommandProbeOptions = {
+  env?: NodeJS.ProcessEnv;
+};
+
 export function tokenToolsPrompt(config: OpenKarenConfig): string {
   const rtk = rtkStatus(config.rtkCommand);
   const tilth = commandStatus('tilth', config.tilthCommand, 'MCP server + AST-aware code reading', ['--help'], '--mcp');
@@ -38,8 +42,8 @@ export function tokenToolsPrompt(config: OpenKarenConfig): string {
   ].join('\n');
 }
 
-export function rtkStatus(command: string): TokenToolStatus {
-  if (!commandAvailable(command)) {
+export function rtkStatus(command: string, options: CommandProbeOptions = {}): TokenToolStatus {
+  if (!commandAvailable(command, options)) {
     return {
       id: 'rtk',
       state: 'missing',
@@ -47,7 +51,7 @@ export function rtkStatus(command: string): TokenToolStatus {
     };
   }
 
-  const help = commandOutput(command, ['--help']);
+  const help = commandOutput(command, ['--help'], options);
   const looksLikeRustTokenKiller =
     /\bgain\b/.test(help) &&
     /\binit\b/.test(help) &&
@@ -56,7 +60,7 @@ export function rtkStatus(command: string): TokenToolStatus {
     return {
       id: 'rtk',
       state: 'missing',
-      detail: `${command} exists but is not Rust Token Killer; install rtk-ai/rtk and ensure it wins PATH`,
+      detail: `${command} exists but is not Rust Token Killer; this is commonly the unrelated npm package named rtk. Install rtk-ai/rtk and ensure it wins PATH`,
     };
   }
 
@@ -67,13 +71,13 @@ export function rtkStatus(command: string): TokenToolStatus {
   };
 }
 
-export function commandAvailable(command: string): boolean {
+export function commandAvailable(command: string, options: CommandProbeOptions = {}): boolean {
   const executable = commandExecutable(command);
   if (executable.includes('/')) {
     return existsSync(executable);
   }
 
-  const pathEnv = process.env.PATH ?? '';
+  const pathEnv = options.env?.PATH ?? process.env.PATH ?? '';
   const extensions = process.platform === 'win32' ? ['', '.cmd', '.exe', '.bat'] : [''];
   return pathEnv.split(delimiter).some((entry) => {
     const base = isAbsolute(executable) ? executable : join(entry, executable);
@@ -87,20 +91,22 @@ function commandStatus(
   purpose: string,
   probeArgs: string[] = ['--help'],
   requiredOutput?: string,
+  options: CommandProbeOptions = {},
 ): TokenToolStatus {
-  if (!commandAvailable(command)) {
+  if (!commandAvailable(command, options)) {
     return { id, state: 'missing', detail: `${command} not on PATH; ${purpose}` };
   }
-  if (requiredOutput && !commandOutput(command, probeArgs).includes(requiredOutput)) {
+  if (requiredOutput && !commandOutput(command, probeArgs, options).includes(requiredOutput)) {
     return { id, state: 'missing', detail: `${command} is present but does not expose ${requiredOutput}` };
   }
   return { id, state: 'available', detail: `${command} available; ${purpose}` };
 }
 
-function commandOutput(command: string, args: string[]): string {
+function commandOutput(command: string, args: string[], options: CommandProbeOptions = {}): string {
   const result = spawnSync(commandExecutable(command), args, {
     encoding: 'utf8',
     timeout: 2_000,
+    env: options.env ?? process.env,
   });
   return `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
 }
