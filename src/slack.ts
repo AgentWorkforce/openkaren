@@ -4,6 +4,8 @@ import type {
   SlackEventPayload,
   SlackOutboundFormat,
 } from './types.js';
+import { createBridgeSessionId } from './identity-bridge.js';
+import { redactSecretText } from './redaction.js';
 
 export const SLACK_SURFACE_ID = 'slack';
 
@@ -15,6 +17,7 @@ export type SlackDispatchResult =
 export function normalizeSlackEvent(
   surfaceId: string,
   payload: SlackEventPayload,
+  identityBridgeMappings?: ReadonlyMap<string, string>,
 ): {
   id: string;
   surfaceId: string;
@@ -40,7 +43,7 @@ export function normalizeSlackEvent(
   return {
     id: `slack:${payload.event_id ?? ts}`,
     surfaceId,
-    sessionId: `bridge:user:${userId}`,
+    sessionId: createBridgeSessionId({ surface: 'slack', userId }, identityBridgeMappings),
     userId,
     workspaceId: `slack:${teamId}`,
     text: event.text,
@@ -99,7 +102,7 @@ export async function sendSlackFormatted(
   });
   const payload = await response.json().catch(() => null) as { ok?: boolean; error?: string } | null;
   if (!response.ok || !payload?.ok) {
-    throw new Error(payload?.error ?? `Slack chat.postMessage failed with ${response.status}`);
+    throw new Error(redactSecretText(payload?.error ?? `Slack chat.postMessage failed with ${response.status}`));
   }
 }
 
@@ -126,11 +129,8 @@ export function normalizeSlackWebhook(
     return { type: 'challenge', challenge: payload.challenge };
   }
   const channelId = payload.event?.channel;
-  if (
-    channelId &&
-    config.slackAllowedChannelIds.size > 0 &&
-    !config.slackAllowedChannelIds.has(channelId)
-  ) {
+  const channelAllowlist = config.slackAllowedChannelIds;
+  if (channelId && channelAllowlist.size > 0 && !channelAllowlist.has(channelId)) {
     return { type: 'ignored', reason: 'channel-not-allowed' };
   }
 

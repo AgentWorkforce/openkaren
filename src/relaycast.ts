@@ -23,7 +23,8 @@ import {
   normalizeSlackWebhook,
   type SlackDispatchResult,
 } from './slack.js';
-import { buildDashboardData, renderDashboard } from './dashboard.js';
+import { buildDashboardData, renderDashboard, type DashboardActiveTurn } from './dashboard.js';
+import { redactError } from './redaction.js';
 
 const MAX_WEBHOOK_BODY_BYTES = 1_000_000;
 const DEFAULT_DASHBOARD_PATH = '/dashboard';
@@ -53,6 +54,7 @@ export class RelaycastWebhookServer {
     private readonly onInboxEvent?: (event: OpenKarenInboxEvent) => void,
     private readonly onSlackEvent?: (payload: RelaycastWebhookPayload) => void,
     private readonly onNangoEvent?: (event: NangoWebhookEvent) => void,
+    private readonly activeTurn?: () => DashboardActiveTurn | null,
   ) {}
 
   async start(): Promise<void> {
@@ -168,7 +170,7 @@ export class RelaycastWebhookServer {
     const body = await readRequestBody(request).catch((error: unknown) => {
       sendJson(response, 413, {
         ok: false,
-        error: error instanceof Error ? error.message : 'body_too_large',
+        error: error instanceof Error ? redactError(error) : 'body_too_large',
       });
       return null;
     });
@@ -206,7 +208,7 @@ export class RelaycastWebhookServer {
     const body = await readRequestBody(request).catch((error: unknown) => {
       sendJson(response, 413, {
         ok: false,
-        error: error instanceof Error ? error.message : 'body_too_large',
+        error: error instanceof Error ? redactError(error) : 'body_too_large',
       });
       return null;
     });
@@ -259,7 +261,7 @@ export class RelaycastWebhookServer {
     const body = await readRequestBody(request).catch((error: unknown) => {
       sendJson(response, 413, {
         ok: false,
-        error: error instanceof Error ? error.message : 'body_too_large',
+        error: error instanceof Error ? redactError(error) : 'body_too_large',
       });
       return null;
     });
@@ -300,7 +302,7 @@ export class RelaycastWebhookServer {
     const body = await readRequestBody(request).catch((error: unknown) => {
       sendJson(response, 413, {
         ok: false,
-        error: error instanceof Error ? error.message : 'body_too_large',
+        error: error instanceof Error ? redactError(error) : 'body_too_large',
       });
       return null;
     });
@@ -345,7 +347,7 @@ export class RelaycastWebhookServer {
     const body = await readRequestBody(request).catch((error: unknown) => {
       sendJson(response, 413, {
         ok: false,
-        error: error instanceof Error ? error.message : 'body_too_large',
+        error: error instanceof Error ? redactError(error) : 'body_too_large',
       });
       return null;
     });
@@ -374,7 +376,12 @@ export class RelaycastWebhookServer {
   }
 
   private shouldListen(): boolean {
-    return this.dashboardEnabled() || this.config.relaycastEnabled || relayCronWebhookConfigured(this.config);
+    return (
+      this.dashboardEnabled() ||
+      this.config.relaycastEnabled ||
+      this.config.slackEnabled ||
+      relayCronWebhookConfigured(this.config)
+    );
   }
 
   private dashboardEnabled(): boolean {
@@ -389,6 +396,7 @@ export class RelaycastWebhookServer {
     const data = await buildDashboardData(
       this.config,
       requestUrl.searchParams.get('user') ?? this.config.stateUserId,
+      this.activeTurn?.() ?? null,
     );
     sendHtml(response, 200, renderDashboard(data));
   }
@@ -397,6 +405,7 @@ export class RelaycastWebhookServer {
     const data = await buildDashboardData(
       this.config,
       requestUrl.searchParams.get('user') ?? this.config.stateUserId,
+      this.activeTurn?.() ?? null,
     );
     sendJson(response, 200, data as unknown as Record<string, unknown>);
   }

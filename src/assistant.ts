@@ -34,7 +34,14 @@ import {
 } from './relaycron.js';
 import { integrationStatuses, integrationStatusText } from './integrations.js';
 import { inboxEventText, type OpenKarenInboxEvent } from './inbox.js';
+import { bridgeMode } from './identity-bridge.js';
 import { decideQuestionRoute } from './question-router.js';
+import {
+  readLastRelayRun,
+  relayLifecycleLabel,
+  relayRunSummaryLines,
+  type RelayLifecycleState,
+} from './relay-evidence.js';
 import { relayfileEventText, RelayfileWatcher, type RelayfileWatchEvent } from './relayfile.js';
 import { routeOpenKarenMessage } from './routing.js';
 import { createKarenStateClient, type KarenStateClient } from './state.js';
@@ -46,6 +53,7 @@ import {
   stampBurnSession,
 } from './token-consciousness.js';
 import { runDoctor } from './doctor.js';
+import { redactError } from './redaction.js';
 import type {
   AgentRunResult,
   OpenKarenConfig,
@@ -75,12 +83,13 @@ const ACKNOWLEDGEMENTS = [
 
 let acknowledgementIndex = 0;
 
-type ActiveCodingTurn = {
+export type ActiveCodingTurn = {
   messageId: string;
   targetId: string;
   surfaceId: string;
   startedAt: string;
   mode: OpenKarenConfig['agentMode'];
+  lifecycleState: RelayLifecycleState | 'command_working' | 'queue_pending';
   text: string;
 };
 
@@ -148,6 +157,7 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
     (event) => {
       void state.upsertNangoConnection(event.connection);
     },
+    () => activeCodingTurn,
   );
   let activeCodingTurn: ActiveCodingTurn | null = null;
   let relayCronProactive: Awaited<ReturnType<typeof startRelayCronProactiveSchedules>> | null = null;
@@ -162,7 +172,7 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
   const surfaces = createSurfaceRegistry({
     normalizationHook(surfaceId, raw) {
       if (surfaceId === TELEGRAM_SURFACE_ID) {
-        return normalizeTelegramUpdate(surfaceId, raw as TelegramUpdate);
+        return normalizeTelegramUpdate(surfaceId, raw as TelegramUpdate, config.identityBridgeMappings);
       }
 
       if (surfaceId === RELAYCAST_SURFACE_ID) {
@@ -170,7 +180,7 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
       }
 
       if (surfaceId === SLACK_SURFACE_ID) {
-        return normalizeSlackEvent(surfaceId, raw as SlackEventPayload);
+        return normalizeSlackEvent(surfaceId, raw as SlackEventPayload, config.identityBridgeMappings);
       }
 
       return null;
@@ -439,7 +449,7 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
       hooks: {
         onError(error, message) {
           console.error('OpenKaren turn failed', {
-            error: error.message,
+            error: redactError(error),
             messageId: message.id,
             surfaceId: message.surfaceId,
           });
@@ -468,13 +478,13 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
       relayfileWatcher.stop();
       await relayCronProactive?.stop().catch((error: unknown) => {
         console.warn('OpenKaren RelayCron proactive stop failed', {
-          error: error instanceof Error ? error.message : String(error),
+          error: redactError(error),
         });
       });
       relayCronProactive = null;
       await relaycast.stop().catch((error: unknown) => {
         console.warn('OpenKaren webhook listener stop failed', {
-          error: error instanceof Error ? error.message : String(error),
+          error: redactError(error),
         });
       });
       telegram.stop();
@@ -485,7 +495,7 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
   async function startWebhookListener(): Promise<void> {
     await relaycast.start().catch((error: unknown) => {
       console.warn('OpenKaren webhook listener unavailable; Telegram will stay online', {
-        error: error instanceof Error ? error.message : String(error),
+        error: redactError(error),
       });
     });
   }
@@ -495,7 +505,7 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
       relayfileWatcher.start();
     } catch (error) {
       console.warn('OpenKaren Relayfile watcher unavailable; Telegram will stay online', {
-        error: error instanceof Error ? error.message : String(error),
+        error: redactError(error),
       });
     }
   }
@@ -506,7 +516,7 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
       primaryTelegramTarget(config),
     ).catch((error: unknown) => {
       console.warn('OpenKaren proactive schedules unavailable; Telegram will stay online', {
-        error: error instanceof Error ? error.message : String(error),
+        error: redactError(error),
       });
       return null;
     });
@@ -641,14 +651,18 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
       surfaceId: input.surfaceId,
       startedAt: new Date().toISOString(),
       mode: config.agentMode,
+      lifecycleState: activeLifecycleState(config),
       text: input.message.text,
     };
+    await persistActiveRelayLifecycle(config, state, activeCodingTurn, 'accepted');
 
     await assistant.emit({
       surfaceId: input.surfaceId,
       text: codingTurnAcknowledgement(config, input.message.text),
       format: input.format,
     });
+    await persistActiveRelayLifecycle(config, state, activeCodingTurn, 'dispatched');
+    await persistActiveRelayLifecycle(config, state, activeCodingTurn, 'working');
 
     const relayCronProgress = await startRelayCronProgress(config, activeCodingTurn);
     const stopProgressTimer = relayCronProgress.enabled
@@ -668,6 +682,7 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
         text: input.message.text,
         spendSnapshot,
       });
+      await persistActiveRelayLifecycle(config, state, activeCodingTurn, relayResultLifecycle(result), result.text);
       await assistant.emit({
         surfaceId: input.surfaceId,
         text: result.text,
@@ -722,14 +737,18 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
       surfaceId: input.target.surfaceId,
       startedAt: new Date().toISOString(),
       mode: config.agentMode,
+      lifecycleState: activeLifecycleState(config),
       text: input.effectiveText,
     };
+    await persistActiveRelayLifecycle(config, input.state, activeCodingTurn, 'accepted');
     console.info('OpenKaren coding turn started', {
       messageId: input.message.id,
       surfaceId: input.target.surfaceId,
       targetId: input.target.targetId,
       mode: config.agentMode,
     });
+    await persistActiveRelayLifecycle(config, input.state, activeCodingTurn, 'dispatched');
+    await persistActiveRelayLifecycle(config, input.state, activeCodingTurn, 'working');
 
     const relayCronProgress = await startRelayCronProgress(config, activeCodingTurn);
     const stopProgressTimer = relayCronProgress.enabled
@@ -750,6 +769,7 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
         spendSnapshot,
       });
 
+      await persistActiveRelayLifecycle(config, input.state, activeCodingTurn, relayResultLifecycle(result), result.text);
       await input.context.runtime.emit({
         surfaceId: input.target.surfaceId,
         text: result.text,
@@ -783,7 +803,7 @@ async function recordInboundMessage(
     });
   } catch (error) {
     console.warn('OpenKaren could not record inbound message for local context', {
-      error: error instanceof Error ? error.message : String(error),
+      error: redactError(error),
       messageId: message.id,
     });
   }
@@ -803,7 +823,7 @@ async function recordAssistantMessage(
     });
   } catch (error) {
     console.warn('OpenKaren could not record assistant message for local context', {
-      error: error instanceof Error ? error.message : String(error),
+      error: redactError(error),
       messageId: message.id,
     });
   }
@@ -844,12 +864,70 @@ export function nextAcknowledgement(text = ''): string {
 function codingTurnAcknowledgement(config: OpenKarenConfig, text = ''): string {
   const base = nextAcknowledgement(text);
   if (config.agentMode === 'relay') {
-    return `${base} Sending it through relay now.`;
+    return `${base} Relay state: accepted; dispatched through relay.`;
   }
   if (config.agentMode === 'command') {
     return `${base} Running it through the local command path now.`;
   }
   return `${base} Queue mode is on, so I am dropping it into the local execution inbox.`;
+}
+
+function activeLifecycleState(config: OpenKarenConfig): ActiveCodingTurn['lifecycleState'] {
+  if (config.agentMode === 'relay') {
+    return 'working';
+  }
+
+  return config.agentMode === 'command' ? 'command_working' : 'queue_pending';
+}
+
+async function persistActiveRelayLifecycle(
+  config: OpenKarenConfig,
+  state: KarenStateClient,
+  activeCodingTurn: ActiveCodingTurn | null,
+  lifecycleState: RelayLifecycleState,
+  finalSummary?: string,
+): Promise<void> {
+  if (!activeCodingTurn || config.agentMode !== 'relay') {
+    return;
+  }
+
+  activeCodingTurn.lifecycleState = lifecycleState;
+  const isTerminal = lifecycleState === 'completed' ||
+    lifecycleState === 'timed_out' ||
+    lifecycleState === 'failed_to_start' ||
+    lifecycleState === 'failed_during_execution';
+
+  await state.putActiveRelayTurn({
+    messageId: activeCodingTurn.messageId,
+    sessionKey: null,
+    surfaceId: activeCodingTurn.surfaceId,
+    targetId: activeCodingTurn.targetId,
+    workflowMode: config.agentRelayWorkflow,
+    lifecycleState,
+    startedAt: activeCodingTurn.startedAt,
+    updatedAt: new Date().toISOString(),
+    completedAt: isTerminal ? new Date().toISOString() : null,
+    rolesSpawned: [],
+    brokerReused: false,
+    finalSummary,
+  }).catch((error: unknown) => {
+    console.warn('OpenKaren active relay lifecycle persistence failed', {
+      lifecycleState,
+      error: redactError(error),
+    });
+  });
+}
+
+export function relayResultLifecycle(result: AgentRunResult): RelayLifecycleState {
+  if (result.relayWaitStatus === 'timeout' || result.timedOut) {
+    return 'timed_out';
+  }
+
+  if (result.relayWaitStatus === 'failed_to_start' || result.relayWaitStatus === 'failed_during_execution') {
+    return result.relayWaitStatus;
+  }
+
+  return 'completed';
 }
 
 function pickAcknowledgement(options: readonly string[]): string {
@@ -911,7 +989,7 @@ async function bridgeStateSession(
     existingBridgeId: sessionId.startsWith('bridge:') ? sessionId : undefined,
   }).catch((error: unknown) => {
     console.warn('OpenKaren state session bridge failed', {
-      error: error instanceof Error ? error.message : String(error),
+      error: redactError(error),
     });
   });
 }
@@ -1086,7 +1164,7 @@ async function routeQuestion(
     }
   } catch (error) {
     console.warn('question-router: fell back to local heuristics', {
-      error: error instanceof Error ? error.message : String(error),
+      error: redactError(error),
     });
   }
 
@@ -1656,15 +1734,17 @@ function compact(text: string, maxChars: number): string {
     : normalized;
 }
 
-function statusText(
+export function statusText(
   config: OpenKarenConfig,
   activeCodingTurn: ActiveCodingTurn | null,
 ): string {
   const lines = [
     'Status',
     `mode: ${config.agentMode}`,
+    `active surfaces: ${activeSurfaces(config).join(', ')}`,
+    `bridge mode: ${bridgeMode(config.identityBridgeMappings)}`,
     activeCodingTurn
-      ? `active: yes (${activeCodingTurn.surfaceId}:${activeCodingTurn.targetId}, ${activeCodingTurn.startedAt})`
+      ? `active: yes (${activeCodingTurn.surfaceId}:${activeCodingTurn.targetId}, ${activeCodingTurn.startedAt}, ${activeLifecycleText(activeCodingTurn)})`
       : 'active: no',
     `cwd: ${config.agentCwd}`,
     `chats: ${config.telegramAllowedChatIds.size || 'all'}`,
@@ -1680,9 +1760,26 @@ function statusText(
       `workflow: ${config.agentRelayWorkflow}`,
       `channel: ${config.agentRelayChannel}`,
     );
+    lines.push(...relayRunSummaryLines(readLastRelayRun(config)));
   }
 
   return lines.join('\n');
+}
+
+function activeLifecycleText(activeCodingTurn: ActiveCodingTurn): string {
+  return activeCodingTurn.lifecycleState === 'command_working'
+    ? 'local command working'
+    : activeCodingTurn.lifecycleState === 'queue_pending'
+      ? 'queue pending'
+      : relayLifecycleLabel(activeCodingTurn.lifecycleState);
+}
+
+function activeSurfaces(config: OpenKarenConfig): string[] {
+  return [
+    'telegram',
+    config.slackEnabled ? 'slack' : null,
+    config.relaycastEnabled ? 'relaycast' : null,
+  ].filter((surface): surface is string => surface !== null);
 }
 
 function startRelayProgressTimer(
@@ -1696,7 +1793,7 @@ function startRelayProgressTimer(
   const timer = setInterval(() => {
     void onProgress().catch((error: unknown) => {
       console.error('OpenKaren relay progress update failed', {
-        error: error instanceof Error ? error.message : String(error),
+        error: redactError(error),
       });
     });
   }, config.agentRelayProgressIntervalMs);
@@ -1714,7 +1811,7 @@ function relayProgressText(activeCodingTurn: ActiveCodingTurn | null): string {
   const elapsedMinutes = Math.max(2, Math.floor(elapsedMs / 60_000));
 
   if (activeCodingTurn.mode === 'relay') {
-    return `Still working. Relay execution has been in flight for about ${elapsedMinutes} minutes.`;
+    return `Relay state: ${relayLifecycleLabel('working')}. Relay execution has been in flight for about ${elapsedMinutes} minutes.`;
   }
 
   if (activeCodingTurn.mode === 'command') {
@@ -1733,7 +1830,7 @@ async function runOpenKarenTurnWithHardTimeout(
     timeout = setTimeout(() => {
       void shutdownOpenKarenRelaySessions().catch((error: unknown) => {
         console.warn('OpenKaren relay reset after hard timeout failed', {
-          error: error instanceof Error ? error.message : String(error),
+          error: redactError(error),
         });
       });
       resolve({
@@ -1751,7 +1848,7 @@ async function runOpenKarenTurnWithHardTimeout(
   try {
     return await Promise.race([
       runOpenKarenTurn(config, turn).catch((error: unknown) => ({
-        text: `OpenKaren turn failed: ${error instanceof Error ? error.message : String(error)}`,
+        text: `OpenKaren turn failed: ${redactError(error)}`,
         exitCode: null,
         timedOut: false,
       })),

@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createOpenKaren } from '../src/assistant.js';
+import { createOpenKaren, statusText } from '../src/assistant.js';
 
 const dataDir = await mkdtemp(join(tmpdir(), 'openkaren-direct-chat-'));
 
@@ -27,6 +27,7 @@ try {
     stateWorkerUrl: null,
     stateWorkerAuthToken: null,
     stateUserId: 'local',
+    identityBridgeMappings: new Map([['telegram:1', 'person-1']]),
     slackEnabled: false,
     slackSigningSecret: null,
     slackAllowedChannelIds: new Set(),
@@ -99,6 +100,11 @@ try {
   const capabilitiesReply = await chatReply('What can you do', config, mockState, null);
   if (!capabilitiesReply.includes('Here is the short version.') || !capabilitiesReply.includes('summarize recent activity')) {
     throw new Error(`Expected capabilities reply to be composed from facets, got: ${capabilitiesReply}`);
+  }
+
+  const status = statusText({ ...config, slackEnabled: true }, null);
+  if (!status.includes('active surfaces: telegram, slack') || !status.includes('bridge mode: explicit mapping')) {
+    throw new Error(`Expected /status active surfaces and bridge mode, got: ${status}`);
   }
 
   const recentReply = await chatReply('What changed recently?', config, mockState, null);

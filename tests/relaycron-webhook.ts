@@ -1,8 +1,10 @@
+import { createHmac } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RelaycastWebhookServer } from '../src/relaycast.js';
 import type { RelayCronProgressTurn } from '../src/relaycron.js';
+import { InMemoryKarenStateClient } from '../src/state.js';
 import type { OpenKarenConfig, RelaycastWebhookPayload } from '../src/types.js';
 
 const dataDir = await mkdtemp(join(tmpdir(), 'openkaren-relaycron-webhook-'));
@@ -12,6 +14,9 @@ let proactiveName: string | null = null;
 let inboxText: string | null = null;
 let slackText: string | null = null;
 let nangoConnectionId: string | null = null;
+const state = new InMemoryKarenStateClient({ monthlyBudgetUsd: 75 });
+const fakeTelegramToken = `123456789:${'ABCDEFGHIJKLMNOPQRSTUVWXYZabc_def'}`;
+const fakeOpenAiKey = `sk-proj-${'abcdefghijklmnopqrstuvwxyz1234567890'}`;
 
 const server = new RelaycastWebhookServer(
   testConfig(dataDir, port),
@@ -32,6 +37,30 @@ const server = new RelaycastWebhookServer(
   },
   (event) => {
     nangoConnectionId = event.connection.connectionId;
+    void state.upsertNangoConnection(event.connection);
+  },
+  () => ({
+    messageId: 'm1',
+    surfaceId: 'telegram',
+    targetId: fakeTelegramToken,
+    startedAt: '2026-05-20T10:00:00.000Z',
+    lifecycleState: 'working',
+    text: `use ${fakeOpenAiKey}`,
+  }),
+);
+const secureSlackServer = new RelaycastWebhookServer(
+  {
+    ...testConfig(dataDir, port + 1),
+    slackSigningSecret: 'secret',
+  },
+  () => {
+    throw new Error('Relaycast handler should not receive secure Slack payloads');
+  },
+  undefined,
+  undefined,
+  undefined,
+  () => {
+    throw new Error('Slack signature failure should not reach handler');
   },
 );
 
@@ -112,6 +141,48 @@ try {
     throw new Error(`Expected Slack webhook, got status ${slack.statusCode} text ${slackText}`);
   }
 
+  const slackChallenge = await server.dispatchForTesting({
+    method: 'POST',
+    path: '/webhooks/slack',
+    body: {
+      type: 'url_verification',
+      challenge: 'launch-ready',
+    },
+  });
+
+  if (slackChallenge.statusCode !== 200 || slackChallenge.body.challenge !== 'launch-ready') {
+    throw new Error(`Expected Slack URL verification challenge, got ${JSON.stringify(slackChallenge)}`);
+  }
+
+  const secureBody = JSON.stringify({
+    type: 'event_callback',
+    team_id: 'T1',
+    event: {
+      type: 'message',
+      user: 'U1',
+      text: 'signed message',
+      channel: 'C1',
+      ts: '1710000000.000100',
+    },
+  });
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const validButWrongBodySignature = `v0=${createHmac('sha256', 'secret')
+    .update(`v0:${timestamp}:${secureBody}-tampered`)
+    .digest('hex')}`;
+  const signatureFailure = await secureSlackServer.dispatchForTesting({
+    method: 'POST',
+    path: '/webhooks/slack',
+    headers: {
+      'x-slack-request-timestamp': timestamp,
+      'x-slack-signature': validButWrongBodySignature,
+    },
+    body: secureBody,
+  });
+
+  if (signatureFailure.statusCode !== 401 || signatureFailure.body.ignored !== 'invalid-signature') {
+    throw new Error(`Expected Slack signature failure, got ${JSON.stringify(signatureFailure)}`);
+  }
+
   const nango = await server.dispatchForTesting({
     method: 'POST',
     path: '/webhooks/nango',
@@ -130,6 +201,13 @@ try {
       `Expected Nango webhook, got status ${nango.statusCode} connection ${nangoConnectionId}`,
     );
   }
+  const storedNangoConnection = await state.getNangoConnection('slack');
+  if (
+    storedNangoConnection?.connectionId !== 'conn-slack' ||
+    storedNangoConnection.providerConfigKey !== 'slack'
+  ) {
+    throw new Error(`Expected /webhooks/nango to persist state, got ${JSON.stringify(storedNangoConnection)}`);
+  }
 
   const dashboard = await server.dispatchForTesting({
     method: 'GET',
@@ -146,11 +224,18 @@ try {
 
   const dashboardData = await server.dispatchForTesting({
     method: 'GET',
-    path: '/dashboard/data',
+    path: `/dashboard/data?user=${fakeOpenAiKey}`,
   });
 
-  if (dashboardData.statusCode !== 200 || dashboardData.body.userId !== 'local') {
+  if (dashboardData.statusCode !== 200 || dashboardData.body.userId !== '[REDACTED]') {
     throw new Error(`Expected dashboard data, got ${dashboardData.statusCode}`);
+  }
+  const dashboardJson = JSON.stringify(dashboardData.body);
+  if (
+    dashboardJson.includes(fakeOpenAiKey) ||
+    dashboardJson.includes(fakeTelegramToken)
+  ) {
+    throw new Error(`Expected dashboard data to redact secrets, got ${dashboardJson}`);
   }
   if (
     !dashboardData.body.spend ||
@@ -181,6 +266,7 @@ try {
   console.log('relaycron webhook ok');
 } finally {
   await server.stop().catch(() => {});
+  await secureSlackServer.stop().catch(() => {});
   await rm(dataDir, { recursive: true, force: true });
 }
 

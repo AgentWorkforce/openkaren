@@ -42,6 +42,45 @@ assertEqual(message?.sessionId, 'bridge:user:U1', 'slack bridge session');
 assertEqual(message?.workspaceId, 'slack:T1', 'slack workspace');
 assertEqual(slackFormat(dispatch.payload).threadTs, '1710000000.000000', 'slack thread format');
 
+const mappedMessage = normalizeSlackEvent('slack', dispatch.payload, new Map([['slack:U1', 'person-1']]));
+assertEqual(mappedMessage?.sessionId, 'bridge:user:person-1', 'slack explicit bridge mapping');
+
+const urlVerification = normalizeSlackWebhook(
+  {
+    slackEnabled: true,
+    slackAllowedChannelIds: new Set(),
+    slackSigningSecret: null,
+  },
+  {
+    rawBody: JSON.stringify({ type: 'url_verification', challenge: 'challenge-token' }),
+    parsedBody: { type: 'url_verification', challenge: 'challenge-token' },
+  },
+);
+assertEqual(urlVerification.type, 'challenge', 'Slack URL verification');
+if (urlVerification.type === 'challenge') {
+  assertEqual(urlVerification.challenge, 'challenge-token', 'Slack URL verification challenge');
+}
+
+const invalidSignature = normalizeSlackWebhook(
+  {
+    slackEnabled: true,
+    slackAllowedChannelIds: new Set(['C1']),
+    slackSigningSecret: 'secret',
+  },
+  {
+    headers: {
+      'x-slack-request-timestamp': now,
+      'x-slack-signature': 'v0=invalid',
+    },
+    rawBody: body,
+    parsedBody: JSON.parse(body) as unknown,
+  },
+);
+assertEqual(invalidSignature.type, 'ignored', 'Slack signature failure');
+if (invalidSignature.type === 'ignored') {
+  assertEqual(invalidSignature.reason, 'invalid-signature', 'Slack signature failure reason');
+}
+
 const blocked = normalizeSlackWebhook(
   {
     slackEnabled: true,
@@ -54,6 +93,22 @@ const blocked = normalizeSlackWebhook(
   },
 );
 assertEqual(blocked.type, 'ignored', 'channel allowlist');
+
+const disabled = normalizeSlackWebhook(
+  {
+    slackEnabled: false,
+    slackAllowedChannelIds: new Set(['C1']),
+    slackSigningSecret: null,
+  },
+  {
+    rawBody: body,
+    parsedBody: JSON.parse(body) as unknown,
+  },
+);
+assertEqual(disabled.type, 'ignored', 'Slack disabled state');
+if (disabled.type === 'ignored') {
+  assertEqual(disabled.reason, 'slack-disabled', 'Slack disabled reason');
+}
 
 console.log('slack ok');
 

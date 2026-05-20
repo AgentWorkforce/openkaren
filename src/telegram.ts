@@ -3,6 +3,8 @@ import type {
   TelegramOutboundFormat,
   TelegramUpdate,
 } from './types.js';
+import { createBridgeSessionId } from './identity-bridge.js';
+import { redactError } from './redaction.js';
 
 const MAX_TELEGRAM_MESSAGE_LENGTH = 3900;
 
@@ -37,7 +39,7 @@ export class TelegramBot {
         }
 
         console.error('Telegram polling error', {
-          error: error instanceof Error ? error.message : String(error),
+          error: redactError(error),
         });
         await sleep(2_000, this.abortController.signal).catch(() => {});
       }
@@ -129,7 +131,7 @@ export class TelegramBot {
       | null;
 
     if (!response.ok || !payload?.ok) {
-      throw new Error(payload?.description ?? `Telegram API ${method} failed`);
+      throw new Error(redactError(payload?.description ?? `Telegram API ${method} failed`));
     }
 
     return payload.result;
@@ -139,6 +141,7 @@ export class TelegramBot {
 export function normalizeTelegramUpdate(
   surfaceId: string,
   update: TelegramUpdate,
+  identityBridgeMappings?: ReadonlyMap<string, string>,
 ): {
   id: string;
   surfaceId: string;
@@ -161,7 +164,7 @@ export function normalizeTelegramUpdate(
   return {
     id: `telegram:${update.update_id}:${message.message_id}`,
     surfaceId,
-    sessionId: `bridge:user:${userId}`,
+    sessionId: createBridgeSessionId({ surface: 'telegram', userId }, identityBridgeMappings),
     userId,
     workspaceId: `telegram:${chatId}`,
     text: message.text,

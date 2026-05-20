@@ -21,6 +21,7 @@ export type OpenKarenConfig = {
   stateWorkerUrl: string | null;
   stateWorkerAuthToken: string | null;
   stateUserId: string;
+  identityBridgeMappings: Map<string, string>;
   slackEnabled: boolean;
   slackSigningSecret: string | null;
   slackAllowedChannelIds: Set<string>;
@@ -218,6 +219,7 @@ export type AgentRunResult = {
   exitCode: number | null;
   timedOut: boolean;
   queuedPath?: string;
+  relayWaitStatus?: 'idle' | 'timeout' | 'exited' | 'failed_to_start' | 'failed_during_execution';
 };
 
 export type ConversationRole = 'user' | 'assistant';

@@ -1,4 +1,7 @@
+import type { RelayLifecycleState } from './relay-evidence.js';
 import type { ConversationMessage, OpenKarenConfig } from './types.js';
+import { createBridgeSessionId } from './identity-bridge.js';
+import { redactError, redactSecretText } from './redaction.js';
 
 export type BudgetTokens = {
   input: number;
@@ -55,6 +58,21 @@ export type WorkflowStateRecord = {
   error?: string;
 };
 
+export type ActiveRelayTurnLifecycleRecord = {
+  messageId: string;
+  sessionKey?: string | null;
+  surfaceId: string;
+  targetId: string;
+  workflowMode: OpenKarenConfig['agentRelayWorkflow'];
+  lifecycleState: RelayLifecycleState;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string | null;
+  rolesSpawned?: string[];
+  brokerReused?: boolean;
+  finalSummary?: string;
+};
+
 export type MemoryRecord = {
   id: string;
   type: 'preference' | 'fact' | 'workflow-pattern';
@@ -85,14 +103,127 @@ export type KarenStateClient = {
   searchMemory(query: string): Promise<MemoryRecord[]>;
   putWorkflow(record: WorkflowStateRecord): Promise<void>;
   dueWorkflows(now?: number): Promise<WorkflowStateRecord[]>;
+  putActiveRelayTurn(record: ActiveRelayTurnLifecycleRecord): Promise<void>;
+  getActiveRelayTurn(messageId: string): Promise<ActiveRelayTurnLifecycleRecord | null>;
 };
 
 export function createKarenStateClient(config: OpenKarenConfig): KarenStateClient {
   if (config.stateWorkerUrl) {
-    return new HttpKarenStateClient(config);
+    return new FallbackKarenStateClient(new HttpKarenStateClient(config), new InMemoryKarenStateClient(config));
   }
 
   return new InMemoryKarenStateClient(config);
+}
+
+class FallbackKarenStateClient implements KarenStateClient {
+  private warned = false;
+
+  constructor(
+    private readonly primary: KarenStateClient,
+    private readonly fallback: KarenStateClient,
+  ) {}
+
+  getOrCreateBridgeSession(input: {
+    surface: 'telegram' | 'slack' | 'relaycast';
+    channelId: string;
+    userId: string;
+    existingBridgeId?: string;
+  }): Promise<BridgeSession> {
+    return this.withFallback('getOrCreateBridgeSession', () => this.primary.getOrCreateBridgeSession(input), () =>
+      this.fallback.getOrCreateBridgeSession(input),
+    );
+  }
+
+  appendMessage(input: {
+    sessionId: string;
+    role: ConversationMessage['role'] | 'tool';
+    content: string;
+    messageId?: string;
+    tokenUsage?: BudgetTokens;
+  }): Promise<void> {
+    return this.withFallback('appendMessage', () => this.primary.appendMessage(input), () =>
+      this.fallback.appendMessage(input),
+    );
+  }
+
+  searchMessages(query: string): Promise<ConversationMessage[]> {
+    return this.withFallback('searchMessages', () => this.primary.searchMessages(query), () =>
+      this.fallback.searchMessages(query),
+    );
+  }
+
+  checkAndRecordSpend(tokens: BudgetTokens): Promise<BudgetDecision> {
+    return this.withFallback('checkAndRecordSpend', () => this.primary.checkAndRecordSpend(tokens), () =>
+      this.fallback.checkAndRecordSpend(tokens),
+    );
+  }
+
+  getNangoConnection(integrationId: string): Promise<NangoConnection | null> {
+    return this.withFallback('getNangoConnection', () => this.primary.getNangoConnection(integrationId), () =>
+      this.fallback.getNangoConnection(integrationId),
+    );
+  }
+
+  upsertNangoConnection(connection: NangoConnection): Promise<void> {
+    return this.withFallback('upsertNangoConnection', () => this.primary.upsertNangoConnection(connection), () =>
+      this.fallback.upsertNangoConnection(connection),
+    );
+  }
+
+  putMemory(memory: MemoryRecord): Promise<void> {
+    return this.withFallback('putMemory', () => this.primary.putMemory(memory), () =>
+      this.fallback.putMemory(memory),
+    );
+  }
+
+  searchMemory(query: string): Promise<MemoryRecord[]> {
+    return this.withFallback('searchMemory', () => this.primary.searchMemory(query), () =>
+      this.fallback.searchMemory(query),
+    );
+  }
+
+  putWorkflow(record: WorkflowStateRecord): Promise<void> {
+    return this.withFallback('putWorkflow', () => this.primary.putWorkflow(record), () =>
+      this.fallback.putWorkflow(record),
+    );
+  }
+
+  dueWorkflows(now?: number): Promise<WorkflowStateRecord[]> {
+    return this.withFallback('dueWorkflows', () => this.primary.dueWorkflows(now), () =>
+      this.fallback.dueWorkflows(now),
+    );
+  }
+
+  putActiveRelayTurn(record: ActiveRelayTurnLifecycleRecord): Promise<void> {
+    return this.withFallback('putActiveRelayTurn', () => this.primary.putActiveRelayTurn(record), () =>
+      this.fallback.putActiveRelayTurn(record),
+    );
+  }
+
+  getActiveRelayTurn(messageId: string): Promise<ActiveRelayTurnLifecycleRecord | null> {
+    return this.withFallback('getActiveRelayTurn', () => this.primary.getActiveRelayTurn(messageId), () =>
+      this.fallback.getActiveRelayTurn(messageId),
+    );
+  }
+
+  private async withFallback<T>(
+    operation: string,
+    primary: () => Promise<T>,
+    fallback: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await primary();
+    } catch (error) {
+      if (!this.warned) {
+        this.warned = true;
+        console.warn('OpenKaren state worker unavailable; falling back to local in-memory state', {
+          operation,
+          error: redactError(error),
+        });
+      }
+      return await fallback();
+    }
+  }
 }
 
 class HttpKarenStateClient implements KarenStateClient {
@@ -153,6 +284,14 @@ class HttpKarenStateClient implements KarenStateClient {
     return this.request(`/workflow/due?now=${now}`, { method: 'GET' });
   }
 
+  async putActiveRelayTurn(record: ActiveRelayTurnLifecycleRecord): Promise<void> {
+    await this.request('/relay/active-turn', { method: 'POST', body: record });
+  }
+
+  getActiveRelayTurn(messageId: string): Promise<ActiveRelayTurnLifecycleRecord | null> {
+    return this.request(`/relay/active-turn/${encodeURIComponent(messageId)}`, { method: 'GET' });
+  }
+
   private async request<T>(
     path: string,
     input: { method: 'GET' | 'POST'; body?: unknown },
@@ -169,7 +308,7 @@ class HttpKarenStateClient implements KarenStateClient {
       body: input.body === undefined ? undefined : JSON.stringify(input.body),
     });
     if (!response.ok) {
-      throw new Error(`Karen state ${path} failed with ${response.status}: ${await response.text()}`);
+      throw new Error(redactSecretText(`Karen state ${path} failed with ${response.status}: ${await response.text()}`));
     }
     return await response.json() as T;
   }
@@ -181,9 +320,13 @@ export class InMemoryKarenStateClient implements KarenStateClient {
   private readonly connections = new Map<string, NangoConnection>();
   private readonly memories = new Map<string, MemoryRecord>();
   private readonly workflows = new Map<string, WorkflowStateRecord>();
+  private readonly activeRelayTurns = new Map<string, ActiveRelayTurnLifecycleRecord>();
   private spendUsd = 0;
 
-  constructor(private readonly config: Pick<OpenKarenConfig, 'monthlyBudgetUsd'>) {}
+  constructor(
+    private readonly config: Pick<OpenKarenConfig, 'monthlyBudgetUsd'> &
+      Partial<Pick<OpenKarenConfig, 'identityBridgeMappings'>>,
+  ) {}
 
   async getOrCreateBridgeSession(input: {
     surface: 'telegram' | 'slack' | 'relaycast';
@@ -191,7 +334,8 @@ export class InMemoryKarenStateClient implements KarenStateClient {
     userId: string;
     existingBridgeId?: string;
   }): Promise<BridgeSession> {
-    const bridgeSessionId = input.existingBridgeId ?? `user:${input.userId}`;
+    const bridgeSessionId = input.existingBridgeId ??
+      createBridgeSessionId(input, this.config.identityBridgeMappings);
     const existing = [...this.sessions.values()].find((session) =>
       session.bridgeSessionId === bridgeSessionId &&
       session.surface === input.surface &&
@@ -289,6 +433,22 @@ export class InMemoryKarenStateClient implements KarenStateClient {
       )
       .sort((left, right) => (left.scheduledAt ?? 0) - (right.scheduledAt ?? 0));
   }
+
+  async putActiveRelayTurn(record: ActiveRelayTurnLifecycleRecord): Promise<void> {
+    this.activeRelayTurns.set(record.messageId, cloneActiveRelayTurn(record));
+  }
+
+  async getActiveRelayTurn(messageId: string): Promise<ActiveRelayTurnLifecycleRecord | null> {
+    const record = this.activeRelayTurns.get(messageId);
+    return record ? cloneActiveRelayTurn(record) : null;
+  }
+}
+
+function cloneActiveRelayTurn(record: ActiveRelayTurnLifecycleRecord): ActiveRelayTurnLifecycleRecord {
+  return {
+    ...record,
+    rolesSpawned: record.rolesSpawned ? [...record.rolesSpawned] : undefined,
+  };
 }
 
 function estimateTokenCostUsd(tokens: BudgetTokens): number {

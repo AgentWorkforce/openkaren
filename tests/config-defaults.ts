@@ -27,6 +27,7 @@ try {
   assertEqual(config.dashboardPath, '/dashboard', 'default dashboard path');
   assertEqual(config.stateWorkerUrl, null, 'default state worker url');
   assertEqual(config.stateUserId, 'local', 'default state user id');
+  assertEqual(config.identityBridgeMappings.size, 0, 'default identity bridge mapping count');
   assertEqual(config.slackEnabled, false, 'default slack enabled');
   assertEqual(config.slackWebhookPath, '/webhooks/slack', 'default slack webhook path');
   assertEqual(config.nangoWebhookPath, '/webhooks/nango', 'default nango webhook path');
@@ -46,6 +47,13 @@ try {
 
   assertEqual(commandConfig.agentMode, 'command', 'implicit command mode');
 
+  const disabledDashboardConfig = loadConfig({
+    TELEGRAM_BOT_TOKEN: 'test-token',
+    OPENKAREN_DATA_DIR: dataDir,
+    OPENKAREN_DASHBOARD: 'off',
+  });
+  assertEqual(disabledDashboardConfig.dashboardEnabled, false, 'dashboard off switch');
+
   const routerConfig = loadConfig({
     TELEGRAM_BOT_TOKEN: 'test-token',
     OPENKAREN_DATA_DIR: dataDir,
@@ -55,6 +63,22 @@ try {
 
   assertEqual(routerConfig.questionRouterModel, 'gpt-test-router', 'question router model env');
   assertEqual(routerConfig.openaiApiKey, 'sk-test', 'OpenAI API key env');
+
+  const bridgeConfig = loadConfig({
+    TELEGRAM_BOT_TOKEN: 'test-token',
+    OPENKAREN_DATA_DIR: dataDir,
+    OPENKAREN_IDENTITY_BRIDGE_MAP: 'telegram:777=human-1,slack:U1=human-1',
+  });
+  assertEqual(
+    bridgeConfig.identityBridgeMappings.get('telegram:777'),
+    'human-1',
+    'identity bridge Telegram mapping',
+  );
+  assertEqual(
+    bridgeConfig.identityBridgeMappings.get('slack:U1'),
+    'human-1',
+    'identity bridge Slack mapping',
+  );
 
   const queueConfig = loadConfig({
     TELEGRAM_BOT_TOKEN: 'test-token',

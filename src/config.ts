@@ -58,13 +58,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OpenKarenConfi
       resolvedEnv.RELAYCRON_API_KEY ?? resolvedEnv.OPENKAREN_RELAYCRON_API_KEY,
     ),
     relaycronWebhookUrl: normalizeOptional(resolvedEnv.OPENKAREN_RELAYCRON_WEBHOOK_URL),
-    dashboardEnabled: parseBoolean(resolvedEnv.OPENKAREN_DASHBOARD_ENABLED ?? 'true'),
+    dashboardEnabled: parseDashboardEnabled(resolvedEnv),
     dashboardPath: parseWebhookPath(resolvedEnv.OPENKAREN_DASHBOARD_PATH ?? DEFAULT_DASHBOARD_PATH),
     stateWorkerUrl: normalizeOptional(resolvedEnv.OPENKAREN_STATE_WORKER_URL),
     stateWorkerAuthToken: normalizeOptional(
       resolvedEnv.OPENKAREN_STATE_AUTH_TOKEN ?? resolvedEnv.KAREN_STATE_TOKEN,
     ),
     stateUserId: resolvedEnv.OPENKAREN_STATE_USER_ID?.trim() || 'local',
+    identityBridgeMappings: parseIdentityBridgeMappings(
+      resolvedEnv.OPENKAREN_IDENTITY_BRIDGE_MAP ?? resolvedEnv.OPENKAREN_BRIDGE_USER_MAP,
+    ),
     slackEnabled: parseBoolean(resolvedEnv.OPENKAREN_SLACK_ENABLED),
     slackSigningSecret: normalizeOptional(resolvedEnv.OPENKAREN_SLACK_SIGNING_SECRET),
     slackAllowedChannelIds: parseSet(resolvedEnv.OPENKAREN_SLACK_ALLOWED_CHANNEL_IDS),
@@ -236,6 +239,39 @@ function parseSet(value: string | undefined): Set<string> {
   );
 }
 
+function parseIdentityBridgeMappings(value: string | undefined): Map<string, string> {
+  const mappings = new Map<string, string>();
+  const normalized = normalizeOptional(value);
+  if (!normalized) {
+    return mappings;
+  }
+
+  if (normalized.startsWith('{')) {
+    const parsed = JSON.parse(normalized) as Record<string, unknown>;
+    for (const [key, mappedUserId] of Object.entries(parsed)) {
+      if (typeof mappedUserId === 'string' && key.trim() && mappedUserId.trim()) {
+        mappings.set(key.trim(), mappedUserId.trim());
+      }
+    }
+    return mappings;
+  }
+
+  for (const entry of normalized.split(',')) {
+    const separator = entry.indexOf('=');
+    if (separator <= 0) {
+      continue;
+    }
+
+    const key = entry.slice(0, separator).trim();
+    const mappedUserId = entry.slice(separator + 1).trim();
+    if (key && mappedUserId) {
+      mappings.set(key, mappedUserId);
+    }
+  }
+
+  return mappings;
+}
+
 function normalizeOptional(value: string | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
@@ -243,6 +279,14 @@ function normalizeOptional(value: string | undefined): string | null {
 
 function parseBoolean(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(value?.trim().toLowerCase() ?? '');
+}
+
+function parseDashboardEnabled(env: NodeJS.ProcessEnv): boolean {
+  const switchValue = env.OPENKAREN_DASHBOARD?.trim().toLowerCase();
+  if (switchValue === 'off' || switchValue === 'false' || switchValue === '0') {
+    return false;
+  }
+  return parseBoolean(env.OPENKAREN_DASHBOARD_ENABLED ?? 'true');
 }
 
 function parsePositiveInt(
