@@ -94,6 +94,26 @@ await assertTelegramRouterScenario('How is OpenKaren built?', {
   },
 });
 
+await assertTelegramRouterScenario('What changed recently?', {
+  routerDecision: {
+    route: 'direct_answer',
+    intent: 'recent_activity',
+    reason: 'recent activity question',
+  },
+  verify(result) {
+    if (result.routerRequests.length !== 1) {
+      throw new Error(`Expected one router request for recent activity, got ${result.routerRequests.length}`);
+    }
+    const reply = String(result.sentMessages[0]?.text ?? '');
+    if (!reply.includes('quick read on recent activity') || !reply.includes('latest repo commit')) {
+      throw new Error(`Expected recent activity reply, got: ${reply}`);
+    }
+    if (result.queuedItems.length !== 0) {
+      throw new Error(`Expected no queued items for recent activity question, got ${result.queuedItems.length}`);
+    }
+  },
+});
+
 await assertTelegramRouterScenario('Fix the failing config test', {
   routerDecision: {
     route: 'coding_task',
@@ -110,6 +130,29 @@ await assertTelegramRouterScenario('Fix the failing config test', {
     }
     if (result.queuedItems.length !== 1 || result.queuedItems[0]?.text !== 'Fix the failing config test') {
       throw new Error(`Expected one queued item for work request, got: ${JSON.stringify(result.queuedItems)}`);
+    }
+  },
+});
+
+await assertTelegramRouterScenario('Can you spawn a codex agent to dig into recent changes?', {
+  routerDecision: {
+    route: 'coding_task',
+    reason: 'delegated coding investigation request',
+  },
+  expectedMessages: 2,
+  verify(result) {
+    if (result.routerRequests.length !== 1) {
+      throw new Error(`Expected one router request for semantic delegation prompt, got ${result.routerRequests.length}`);
+    }
+    const ack = String(result.sentMessages[0]?.text ?? '');
+    if (!/Checking the damage|I see the problem|This smells fixable|I will make it less wrong|Taking it apart now/.test(ack)) {
+      throw new Error(`Expected coding acknowledgement for semantic delegation prompt, got: ${ack}`);
+    }
+    if (!String(result.sentMessages[1]?.text ?? '').startsWith('Queued for later execution.')) {
+      throw new Error(`Expected queued confirmation for semantic delegation prompt, got: ${String(result.sentMessages[1]?.text)}`);
+    }
+    if (result.queuedItems.length !== 1 || result.queuedItems[0]?.text !== 'Can you spawn a codex agent to dig into recent changes?') {
+      throw new Error(`Expected one queued item for semantic delegation prompt, got: ${JSON.stringify(result.queuedItems)}`);
     }
   },
 });

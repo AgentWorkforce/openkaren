@@ -1149,18 +1149,17 @@ async function routeQuestion(
   state: KarenStateClient,
   activeCodingTurn: ActiveCodingTurn | null,
 ): Promise<QuestionRoute> {
-  const directChatRoute = forcedDirectChatRoute(text);
+  const forcedChatRoute = forcedCasualChatRoute(text);
 
   if (!config.openaiApiKey || !config.questionRouterModel) {
-    return directChatRoute ?? fallbackQuestionRoute(text);
+    return forcedChatRoute ?? fallbackQuestionRoute(text);
   }
 
   try {
     const packet = await buildLocalContextPacket(config, state, activeCodingTurn);
     const decision = await decideQuestionRoute(text, packet, config);
     if (decision) {
-      const route = routeFromRouterDecision(decision, 'llm');
-      return route.kind === 'coding' && directChatRoute ? directChatRoute : route;
+      return routeFromRouterDecision(decision, 'llm');
     }
   } catch (error) {
     console.warn('question-router: fell back to local heuristics', {
@@ -1169,19 +1168,11 @@ async function routeQuestion(
   }
 
   console.info('question-router: decided_by=fallback because LLM decision was unavailable');
-  return directChatRoute ?? fallbackQuestionRoute(text);
+  return forcedChatRoute ?? fallbackQuestionRoute(text);
 }
 
-function forcedDirectChatRoute(text: string): QuestionRoute | null {
+function forcedCasualChatRoute(text: string): QuestionRoute | null {
   const normalized = normalizeCasualText(text);
-  const directIntent = classifyDirectQuestion(normalized);
-  if (directIntent) {
-    return routeFromRouterDecision(
-      { route: 'direct_answer', intent: mapDirectIntentToRouterIntent(directIntent) },
-      'fallback',
-    );
-  }
-
   if (
     isGreetingText(normalized) ||
     /^(thanks|thank you|thx|appreciate it)$/.test(normalized)
