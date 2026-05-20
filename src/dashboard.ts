@@ -1,5 +1,6 @@
 import type { OpenKarenConfig } from './types.js';
 import { tokenToolStatuses, type TokenToolStatus } from './token-tools.js';
+import { redactSecretText, redactSecrets } from './redaction.js';
 import {
   budgetGateText,
   forecastText,
@@ -11,6 +12,7 @@ import {
 export type DashboardData = {
   generatedAt: string;
   userId: string;
+  activeTurn: DashboardActiveTurn | null;
   spend: SpendSnapshot;
   spendText: string;
   forecastText: string;
@@ -19,20 +21,32 @@ export type DashboardData = {
   tools: TokenToolStatus[];
 };
 
+export type DashboardActiveTurn = {
+  messageId: string;
+  surfaceId: string;
+  targetId: string;
+  startedAt: string;
+  lifecycleState: string;
+  text: string;
+};
+
 export async function buildDashboardData(
   config: OpenKarenConfig,
   userId = config.stateUserId,
+  activeTurn: DashboardActiveTurn | null = null,
 ): Promise<DashboardData> {
   const spend = await readSpendSnapshot(config, userId);
+  const gate = budgetGateText(spend);
   return {
     generatedAt: new Date().toISOString(),
-    userId,
-    spend,
-    spendText: spendText(spend),
-    forecastText: forecastText(spend),
-    budgetGate: budgetGateText(spend),
-    tagScope: spend.tagScope,
-    tools: tokenToolStatuses(config),
+    userId: redactSecretText(userId),
+    activeTurn: redactSecrets(activeTurn) as DashboardActiveTurn | null,
+    spend: redactSecrets(spend) as SpendSnapshot,
+    spendText: redactSecretText(spendText(spend)),
+    forecastText: redactSecretText(forecastText(spend)),
+    budgetGate: gate === null ? null : redactSecretText(gate),
+    tagScope: redactSecrets(spend.tagScope) as Record<string, string>,
+    tools: redactSecrets(tokenToolStatuses(config)) as TokenToolStatus[],
   };
 }
 
@@ -203,6 +217,10 @@ export function renderDashboard(data: DashboardData): string {
         <div class="muted">${escapeHtml(spend.detail)}</div>
       </div>
       <div class="panel wide">
+        <h2>Active Turn</h2>
+        <pre>${escapeHtml(formatActiveTurn(data.activeTurn))}</pre>
+      </div>
+      <div class="panel wide">
         <h2>Tag Scope</h2>
         <pre>${escapeHtml(formatTagScope(data.tagScope))}</pre>
       </div>
@@ -235,6 +253,20 @@ function formatTagScope(tags: Record<string, string>): string {
   return Object.entries(tags)
     .map(([key, value]) => `${key}=${value}`)
     .join('\n');
+}
+
+function formatActiveTurn(activeTurn: DashboardActiveTurn | null): string {
+  if (!activeTurn) {
+    return 'none';
+  }
+  return [
+    `state=${activeTurn.lifecycleState}`,
+    `surface=${activeTurn.surfaceId}`,
+    `target=${activeTurn.targetId}`,
+    `started=${activeTurn.startedAt}`,
+    `message=${activeTurn.messageId}`,
+    `text=${activeTurn.text}`,
+  ].join('\n');
 }
 
 function formatUsd(value: number): string {
