@@ -86,11 +86,14 @@ export class TelegramBot {
   private async registerCommands(): Promise<void> {
     await this.call('setMyCommands', {
       commands: [
+        { command: 'start', description: 'Start OpenKaren and show first-run help' },
         { command: 'help', description: 'Show help and basic usage' },
         { command: 'status', description: 'Show current runtime status' },
         { command: 'integrations', description: 'Show integration wiring status' },
         { command: 'spend', description: 'Show current spend snapshot' },
         { command: 'forecast', description: 'Forecast budget exhaustion' },
+        { command: 'dashboard', description: 'Show the local dashboard URL' },
+        { command: 'doctor', description: 'Run a compact setup doctor check' },
         { command: 'do', description: 'Force a coding task, for example /do fix the tests' },
       ],
     });

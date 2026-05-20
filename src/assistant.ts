@@ -45,6 +45,7 @@ import {
   spendText,
   stampBurnSession,
 } from './token-consciousness.js';
+import { runDoctor } from './doctor.js';
 import type {
   AgentRunResult,
   OpenKarenConfig,
@@ -346,6 +347,28 @@ export function createOpenKaren(config: OpenKarenConfig): OpenKarenRuntime {
           if (command === '/forecast') {
             const snapshot = await readSpendSnapshot(config, message.userId);
             const reply = forecastText(snapshot);
+            await context.runtime.emit({
+              surfaceId: target.surfaceId,
+              text: reply,
+              format: target.format,
+            });
+            await recordAssistantMessage(state, message, reply);
+            return;
+          }
+
+          if (command === '/dashboard') {
+            const reply = dashboardText(config);
+            await context.runtime.emit({
+              surfaceId: target.surfaceId,
+              text: reply,
+              format: target.format,
+            });
+            await recordAssistantMessage(state, message, reply);
+            return;
+          }
+
+          if (command === '/doctor') {
+            const reply = await doctorText(config);
             await context.runtime.emit({
               surfaceId: target.surfaceId,
               text: reply,
@@ -944,15 +967,50 @@ function parseDoCommand(text: string): string | null {
 
 function helpText(config: OpenKarenConfig): string {
   return [
-    'Online.',
-    'Send work. I edit.',
-    '/status state. /integrations wiring.',
-    config.agentMode === 'relay'
-      ? `Relay: ${config.agentRelayCli}`
-      : config.agentMode === 'command'
-        ? `Command: ${config.agentCommand}`
-        : 'Queue mode.',
+    'OpenKaren can answer setup/status questions and take coding work.',
+    'Work: say "fix the dashboard spend bug" or use /do <task> to force execution.',
+    'Setup: /status, /doctor, /integrations.',
+    `Dashboard: ${dashboardUrl(config)}`,
+    'Spend: /spend now, /forecast for budget runway.',
+    'Casual chat and broad questions stay chat-only; concrete tasks become work.',
   ].join('\n');
+}
+
+function dashboardText(config: OpenKarenConfig): string {
+  const url = dashboardUrl(config);
+  return config.dashboardEnabled === false
+    ? `Dashboard: ${url}\nDashboard serving is disabled. Set OPENKAREN_DASHBOARD_ENABLED=true to expose it locally.`
+    : `Dashboard: ${url}`;
+}
+
+async function doctorText(config: OpenKarenConfig): Promise<string> {
+  const report = await runDoctor({ cwd: config.agentCwd });
+  const checks = Object.values(report.sections).flat();
+  const warnings = checks.filter((check) => check.status === 'warn').length;
+  const failures = checks.filter((check) => check.status === 'fail').length;
+  const headline = report.ok
+    ? 'Doctor: required checks pass.'
+    : `Doctor: ${report.requiredFailures} required blocker${report.requiredFailures === 1 ? '' : 's'}.`;
+  const sectionSummaries = Object.entries(report.sections).map(([section, sectionChecks]) => {
+    const failed = sectionChecks.filter((check) => check.status === 'fail').length;
+    const warned = sectionChecks.filter((check) => check.status === 'warn').length;
+    return `- ${section}: ${failed} fail, ${warned} warn`;
+  });
+
+  return [
+    headline,
+    `checks: ${checks.length}; failures: ${failures}; warnings: ${warnings}`,
+    ...sectionSummaries,
+  ].join('\n');
+}
+
+function dashboardUrl(config: OpenKarenConfig): string {
+  const host = config.relaycastHost === '0.0.0.0' || config.relaycastHost === '::'
+    ? '127.0.0.1'
+    : config.relaycastHost;
+  const path = config.dashboardPath.startsWith('/') ? config.dashboardPath : `/${config.dashboardPath}`;
+  const hostname = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  return `http://${hostname}:${config.relaycastPort}${path}`;
 }
 
 async function chatReplyText(
@@ -1013,15 +1071,18 @@ async function routeQuestion(
   state: KarenStateClient,
   activeCodingTurn: ActiveCodingTurn | null,
 ): Promise<QuestionRoute> {
+  const directChatRoute = forcedDirectChatRoute(text);
+
   if (!config.openaiApiKey || !config.questionRouterModel) {
-    return fallbackQuestionRoute(text);
+    return directChatRoute ?? fallbackQuestionRoute(text);
   }
 
   try {
     const packet = await buildLocalContextPacket(config, state, activeCodingTurn);
     const decision = await decideQuestionRoute(text, packet, config);
     if (decision) {
-      return routeFromRouterDecision(decision, 'llm');
+      const route = routeFromRouterDecision(decision, 'llm');
+      return route.kind === 'coding' && directChatRoute ? directChatRoute : route;
     }
   } catch (error) {
     console.warn('question-router: fell back to local heuristics', {
@@ -1030,7 +1091,33 @@ async function routeQuestion(
   }
 
   console.info('question-router: decided_by=fallback because LLM decision was unavailable');
-  return fallbackQuestionRoute(text);
+  return directChatRoute ?? fallbackQuestionRoute(text);
+}
+
+function forcedDirectChatRoute(text: string): QuestionRoute | null {
+  const normalized = normalizeCasualText(text);
+  const directIntent = classifyDirectQuestion(normalized);
+  if (directIntent) {
+    return routeFromRouterDecision(
+      { route: 'direct_answer', intent: mapDirectIntentToRouterIntent(directIntent) },
+      'fallback',
+    );
+  }
+
+  if (
+    isGreetingText(normalized) ||
+    /^(thanks|thank you|thx|appreciate it)$/.test(normalized)
+  ) {
+    return {
+      kind: 'chat',
+      intent: null,
+      decidedBy: 'fallback',
+      decisionRoute: 'direct_answer',
+      reason: 'deterministic casual chat guard',
+    };
+  }
+
+  return null;
 }
 
 function routeFromRouterDecision(
@@ -1244,7 +1331,7 @@ async function generalQuestionReply(
     `- key wiring: ${packet.wiredIntegrations.join(', ') || 'no major integrations wired'}`,
     '- if you want a sharper answer, ask about architecture, integration depth, recent activity, or what to improve next',
   ];
-  return ['Here is the quickest grounded read I can give from local context.', ...facets].join('\n');
+  return ['Here is the best quick read I can give from local context.', ...facets].join('\n');
 }
 
 async function composeDirectQuestionReply(

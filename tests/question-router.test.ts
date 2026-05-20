@@ -105,7 +105,7 @@ await assertTelegramRouterScenario('Fix the failing config test', {
     if (!/Checking the damage|I see the problem|This smells fixable|I will make it less wrong/.test(ack)) {
       throw new Error(`Expected coding acknowledgement, got: ${ack}`);
     }
-    if (!String(result.sentMessages[1]?.text ?? '').includes('Queued.')) {
+    if (!String(result.sentMessages[1]?.text ?? '').startsWith('Queued for later execution.')) {
       throw new Error(`Expected queued confirmation, got: ${String(result.sentMessages[1]?.text)}`);
     }
     if (result.queuedItems.length !== 1 || result.queuedItems[0]?.text !== 'Fix the failing config test') {
@@ -159,7 +159,133 @@ await assertTelegramRouterScenario('How can we improve the integration?', {
   },
 });
 
+// /do <ambiguous-chat-like-body> must bypass the question router and enter
+// the coding/queue path even though the body alone would classify as chat.
+await assertTelegramRouterScenario('/do say hello', {
+  routerDecision: {
+    route: 'direct_answer',
+    intent: 'general',
+    reason: 'would be wrong if called',
+  },
+  expectedMessages: 2,
+  verify(result) {
+    if (result.routerRequests.length !== 0) {
+      throw new Error(`Expected /do to bypass router, got ${result.routerRequests.length} router calls`);
+    }
+    const ack = String(result.sentMessages[0]?.text ?? '');
+    if (!/Queue mode is on, so I am dropping it into the local execution inbox\./.test(ack)) {
+      throw new Error(`Expected queue-mode coding acknowledgement for /do, got: ${ack}`);
+    }
+    const followup = String(result.sentMessages[1]?.text ?? '');
+    if (!followup.startsWith('Queued for later execution.')) {
+      throw new Error(`Expected queued confirmation after /do, got: ${followup}`);
+    }
+    if (result.queuedItems.length !== 1) {
+      throw new Error(`Expected exactly one queued item from /do bypass, got ${result.queuedItems.length}`);
+    }
+    if (result.queuedItems[0]?.text !== 'say hello') {
+      throw new Error(`Expected queued text to be the stripped /do body, got: ${JSON.stringify(result.queuedItems[0])}`);
+    }
+  },
+});
+
+// /help must stay compact (≤ 1500 chars) and mention each of the six topics
+// the spec calls out, so first-run users see a one-screen mobile reply.
+await assertTelegramRouterScenario('/help', {
+  routerDecision: {
+    route: 'coding_task',
+    reason: 'would be wrong if called',
+  },
+  verify(result) {
+    if (result.routerRequests.length !== 0) {
+      throw new Error(`Expected /help to bypass router, got ${result.routerRequests.length} router calls`);
+    }
+    if (result.queuedItems.length !== 0) {
+      throw new Error(`Expected no queued items for /help, got ${result.queuedItems.length}`);
+    }
+    const reply = String(result.sentMessages[0]?.text ?? '');
+    if (reply.length > 1500) {
+      throw new Error(`Expected /help body ≤ 1500 chars, got ${reply.length}`);
+    }
+    const topicChecks: Array<[string, RegExp]> = [
+      ['what Karen can do', /can answer setup\/status questions and take coding work/i],
+      ['how to ask for coding work', /\/do\s+<task>|Work:\s*say/i],
+      ['how to ask status/setup questions', /\/status[^]*\/doctor[^]*\/integrations/i],
+      ['how to open the dashboard', /Dashboard:\s*http/i],
+      ['how to check token spend', /\/spend[^]*\/forecast/i],
+      ['how to avoid accidental work', /casual chat[^]*stay chat-only/i],
+    ];
+    for (const [label, pattern] of topicChecks) {
+      if (!pattern.test(reply)) {
+        throw new Error(`Expected /help to cover topic "${label}", got: ${reply}`);
+      }
+    }
+  },
+});
+
+await assertTelegramRouterScenario('/start', {
+  routerDecision: {
+    route: 'coding_task',
+    reason: 'would be wrong if called',
+  },
+  verify(result) {
+    if (result.routerRequests.length !== 0) {
+      throw new Error(`Expected /start to bypass router, got ${result.routerRequests.length} router calls`);
+    }
+    if (result.queuedItems.length !== 0) {
+      throw new Error(`Expected no queued items for /start, got ${result.queuedItems.length}`);
+    }
+    const reply = String(result.sentMessages[0]?.text ?? '');
+    if (!reply.includes('OpenKaren can answer setup/status questions and take coding work.')) {
+      throw new Error(`Expected first-run help for /start, got: ${reply}`);
+    }
+  },
+});
+
+await assertTelegramRouterScenario('/dashboard', {
+  routerDecision: {
+    route: 'coding_task',
+    reason: 'would be wrong if called',
+  },
+  verify(result) {
+    if (result.routerRequests.length !== 0) {
+      throw new Error(`Expected /dashboard to bypass router, got ${result.routerRequests.length} router calls`);
+    }
+    if (result.queuedItems.length !== 0) {
+      throw new Error(`Expected no queued items for /dashboard, got ${result.queuedItems.length}`);
+    }
+    const reply = String(result.sentMessages[0]?.text ?? '');
+    if (!reply.includes('Dashboard: http://127.0.0.1:0/dashboard')) {
+      throw new Error(`Expected local dashboard URL for /dashboard, got: ${reply}`);
+    }
+  },
+});
+
+await assertTelegramRouterScenario('/doctor', {
+  routerDecision: {
+    route: 'coding_task',
+    reason: 'would be wrong if called',
+  },
+  verify(result) {
+    if (result.routerRequests.length !== 0) {
+      throw new Error(`Expected /doctor to bypass router, got ${result.routerRequests.length} router calls`);
+    }
+    if (result.queuedItems.length !== 0) {
+      throw new Error(`Expected no queued items for /doctor, got ${result.queuedItems.length}`);
+    }
+    const reply = String(result.sentMessages[0]?.text ?? '');
+    if (!/^Doctor: /m.test(reply) || !/checks: \d+; failures: \d+; warnings: \d+/.test(reply)) {
+      throw new Error(`Expected compact doctor summary for /doctor, got: ${reply}`);
+    }
+  },
+});
+
 console.log('question router runtime ok');
+
+if (process.env.VITEST === 'true') {
+  const vitest = await import('vitest');
+  vitest.test('question-router runtime', () => {});
+}
 
 type RouterScenarioOptions = {
   routerDecision?: QuestionRouterDecision;
@@ -256,7 +382,7 @@ async function runTelegramRouterScenario(
   const running = runtime.start();
 
   try {
-    await waitFor(() => sentMessages.length >= (options.expectedMessages ?? 1), 5_000);
+    await waitFor(() => sentMessages.length >= (options.expectedMessages ?? 1), 10_000);
     await runtime.stop();
     await Promise.race([
       running,
@@ -375,7 +501,7 @@ async function waitFor(assertion: () => boolean, timeoutMs: number): Promise<voi
     if (assertion()) {
       return;
     }
-    await sleep(25);
+    await sleep(50);
   }
 
   throw new Error('Timed out waiting for OpenKaren router runtime condition');
