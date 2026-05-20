@@ -3,9 +3,11 @@ import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { integrationPrompt } from './integrations.js';
+import { writeRelayRunArtifact, type RelayLifecycleState, type RelayRunWaitStatus } from './relay-evidence.js';
 import { createKarenStateClient } from './state.js';
 import { ingestBurnLedger, stampBurnSession } from './token-consciousness.js';
 import { workforceModelForRole, workforcePromptForRole } from './workforce.js';
+import { redactError } from './redaction.js';
 import type {
   AgentRunResult,
   ConversationMessage,
@@ -85,6 +87,7 @@ type RelaySessionAgent = {
   role: RelayAgentRole;
   agent: RelayAgentHandle;
   agentName: string;
+  modelOrPersona: string;
   workerOutput: string;
   lastLogText: string;
   turns: number;
@@ -274,28 +277,80 @@ async function runRelayTurn(
   turn: OpenKarenTurn,
   sessionKey: string,
 ): Promise<AgentRunResult> {
+  const startedAt = new Date().toISOString();
+  let session: RelaySession | null = null;
+
   try {
-    const session = await getRelaySession(config, turn, sessionKey);
+    await persistRelayLifecycle(config, turn, {
+      sessionKey,
+      startedAt,
+      lifecycleState: 'accepted',
+    });
+    await persistRelayLifecycle(config, turn, {
+      sessionKey,
+      startedAt,
+      lifecycleState: 'dispatched',
+    });
+    session = await getRelaySession(config, turn, sessionKey);
+    await persistRelayLifecycle(config, turn, {
+      sessionKey,
+      startedAt,
+      lifecycleState: 'working',
+      session,
+    });
+    let result: AgentRunResult;
 
     if (config.agentRelayWorkflow === 'single') {
-      return await runSingleRelayTurn(config, turn, session);
+      result = await runSingleRelayTurn(config, turn, session);
+    } else {
+      result = await runOrchestratedRelayTurn(config, turn, session);
     }
 
-    return await runOrchestratedRelayTurn(config, turn, session);
+    const waitStatus = result.relayWaitStatus ?? (result.timedOut ? 'timeout' : 'idle');
+    await materializeRelayRunArtifact(config, turn, sessionKey, startedAt, session, {
+      waitStatus,
+      finalSummary: result.text,
+    });
+    await persistRelayLifecycle(config, turn, {
+      sessionKey,
+      startedAt,
+      lifecycleState: relayWaitStatusLifecycle(waitStatus),
+      session,
+      completedAt: new Date().toISOString(),
+      finalSummary: result.text,
+    });
+
+    return result;
   } catch (error) {
+    const failureStatus: RelayRunWaitStatus = session ? 'failed_during_execution' : 'failed_to_start';
     console.error('OpenKaren relay turn failed', {
-      error: error instanceof Error ? error.message : String(error),
+      lifecycleState: failureStatus,
+      error: redactError(error),
     });
 
     relaySessions.delete(sessionKey);
 
-    return {
-      text: `OpenKaren could not start relay execution through ${config.agentRelayCli}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+    const result = {
+      text: `OpenKaren relay ${failureStatus} through ${config.agentRelayCli}: ${redactError(error)}`,
       exitCode: null,
       timedOut: false,
+      relayWaitStatus: failureStatus,
     };
+
+    await materializeRelayRunArtifact(config, turn, sessionKey, startedAt, session, {
+      waitStatus: failureStatus,
+      finalSummary: result.text,
+    });
+    await persistRelayLifecycle(config, turn, {
+      sessionKey,
+      startedAt,
+      lifecycleState: failureStatus,
+      session,
+      completedAt: new Date().toISOString(),
+      finalSummary: result.text,
+    });
+
+    return result;
   }
 }
 
@@ -327,6 +382,7 @@ async function runSingleRelayTurn(
     }),
     exitCode: result.waitStatus === 'timeout' ? null : 0,
     timedOut: result.waitStatus === 'timeout',
+    relayWaitStatus: result.waitStatus,
   };
 }
 
@@ -365,6 +421,7 @@ async function runOrchestratedRelayTurn(
         }),
         exitCode: null,
         timedOut: true,
+        relayWaitStatus: result.waitStatus,
       };
     }
   }
@@ -379,6 +436,7 @@ async function runOrchestratedRelayTurn(
     }),
     exitCode: 0,
     timedOut: false,
+    relayWaitStatus: 'idle',
   };
 }
 
@@ -396,6 +454,8 @@ async function ensureRelayAgent(
 
   const agentName = relayWorkflowName(config, turn, role);
   const relayRuntime = buildRelayRuntime(config, process.env);
+  const selectedModel = config.agentRelayModel ??
+    workforceModelForRole(config, role, turn.spendSnapshot);
   const agent = await session.relay.spawnPty(
     {
       name: agentName,
@@ -404,9 +464,7 @@ async function ensureRelayAgent(
       channels: [config.agentRelayChannel],
       cwd: config.agentCwd,
       idleThresholdSecs: config.agentRelayIdleThresholdSecs,
-      model: config.agentRelayModel ??
-        workforceModelForRole(config, role, turn.spendSnapshot) ??
-        undefined,
+      model: selectedModel ?? undefined,
       skipRelayPrompt: relayRuntime.skipRelayPrompt,
     },
   );
@@ -414,6 +472,7 @@ async function ensureRelayAgent(
     role,
     agent,
     agentName,
+    modelOrPersona: selectedModel ? `${role}:${selectedModel}` : `${role}:persona-selected`,
     workerOutput: '',
     lastLogText: '',
     turns: 0,
@@ -554,6 +613,7 @@ async function createRelaySession(
       console.warn('OpenKaren reusing existing relay broker', {
         cwd: config.agentCwd,
         stateDir: relayStateDir,
+        brokerReused: true,
       });
       relay = AgentRelayClient.connect({ cwd: config.agentCwd }) as RelayHandle;
       session.lifecycle.brokerReuse = 'reused';
@@ -564,6 +624,10 @@ async function createRelaySession(
     if (session.lifecycle.currentStage !== 'broker_reused') {
       session.lifecycle.currentStage = 'session_ready';
     }
+    console.info('OpenKaren relay broker reuse status', {
+      sessionKey,
+      brokerReused: session.lifecycle.brokerReuse === 'reused',
+    });
 
     relay.onWorkerOutput = ({ name, chunk }: { name?: string; chunk: string }) => {
       const target = name
@@ -585,6 +649,77 @@ async function createRelaySession(
     await relay?.shutdown().catch(() => {});
     throw error;
   }
+}
+
+async function materializeRelayRunArtifact(
+  config: OpenKarenConfig,
+  turn: OpenKarenTurn,
+  sessionKey: string,
+  startedAt: string,
+  session: RelaySession | null,
+  result: { waitStatus: RelayRunWaitStatus; finalSummary: string },
+): Promise<void> {
+  await writeRelayRunArtifact(config, {
+    messageId: turn.message.id,
+    sessionKey,
+    workflowMode: config.agentRelayWorkflow,
+    rolesSpawned: session?.agents.map((member) => member.role) ?? [],
+    modelsOrPersonas: session?.agents.map((member) => member.modelOrPersona) ?? [],
+    brokerReused: session?.lifecycle.brokerReuse === 'reused',
+    startedAt,
+    completedAt: new Date().toISOString(),
+    waitStatus: result.waitStatus,
+    finalSummary: result.finalSummary,
+  });
+}
+
+async function persistRelayLifecycle(
+  config: OpenKarenConfig,
+  turn: OpenKarenTurn,
+  input: {
+    sessionKey: string;
+    startedAt: string;
+    lifecycleState: RelayLifecycleState;
+    session?: RelaySession | null;
+    completedAt?: string;
+    finalSummary?: string;
+  },
+): Promise<void> {
+  if (!config.stateWorkerUrl) {
+    return;
+  }
+
+  await createKarenStateClient(config).putActiveRelayTurn({
+    messageId: turn.message.id,
+    sessionKey: input.sessionKey,
+    surfaceId: turn.message.surfaceId,
+    targetId: turn.chatId,
+    workflowMode: config.agentRelayWorkflow,
+    lifecycleState: input.lifecycleState,
+    startedAt: input.startedAt,
+    updatedAt: new Date().toISOString(),
+    completedAt: input.completedAt ?? null,
+    rolesSpawned: input.session?.agents.map((member) => member.role) ?? [],
+    brokerReused: input.session?.lifecycle.brokerReuse === 'reused',
+    finalSummary: input.finalSummary,
+  }).catch((error: unknown) => {
+    console.warn('OpenKaren relay lifecycle persistence failed', {
+      lifecycleState: input.lifecycleState,
+      error: redactError(error),
+    });
+  });
+}
+
+function relayWaitStatusLifecycle(waitStatus: RelayRunWaitStatus): RelayLifecycleState {
+  if (waitStatus === 'timeout') {
+    return 'timed_out';
+  }
+
+  if (waitStatus === 'failed_to_start' || waitStatus === 'failed_during_execution') {
+    return waitStatus;
+  }
+
+  return 'completed';
 }
 
 export function buildRelayRuntime(
@@ -795,7 +930,7 @@ async function appendStateMessage(
     messageId: message.messageId,
   }).catch((error: unknown) => {
     console.warn('OpenKaren state message append failed', {
-      error: error instanceof Error ? error.message : String(error),
+      error: redactError(error),
     });
   });
 }
@@ -994,6 +1129,7 @@ export function formatRelayResult(input: {
 
   if (input.waitStatus === 'timeout') {
     return compactTelegramText([
+      'Relay state: timed_out.',
       `Relay ${input.workflow ?? 'execution'} timed out before I got a clean completion summary.`,
       input.brokerReuse === 'reused' ? 'This turn was attached to an already-running broker.' : null,
       output ? `Last useful output:\n${shapeRelayCompletion(output)}` : 'No worker output.',

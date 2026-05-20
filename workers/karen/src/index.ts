@@ -81,6 +81,12 @@ export class KarenUserDO {
     if (request.method === 'GET' && url.pathname === '/workflow/due') {
       return json(this.dueWorkflows(Number(url.searchParams.get('now') ?? Date.now())));
     }
+    if (request.method === 'POST' && url.pathname === '/relay/active-turn') {
+      return json(this.putActiveRelayTurn(await request.json() as Record<string, unknown>));
+    }
+    if (request.method === 'GET' && url.pathname.startsWith('/relay/active-turn/')) {
+      return json(this.getActiveRelayTurn(decodeURIComponent(url.pathname.split('/').pop() ?? '')));
+    }
 
     return json({ error: 'not_found' }, 404);
   }
@@ -164,6 +170,20 @@ export class KarenUserDO {
         error TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS active_relay_turns (
+        message_id TEXT PRIMARY KEY,
+        session_key TEXT,
+        surface_id TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        workflow_mode TEXT NOT NULL,
+        lifecycle_state TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        roles_spawned TEXT,
+        broker_reused INTEGER DEFAULT 0,
+        final_summary TEXT
       );
       CREATE TABLE IF NOT EXISTS memory (
         id TEXT PRIMARY KEY,
@@ -383,6 +403,69 @@ export class KarenUserDO {
     ).toArray();
   }
 
+  private putActiveRelayTurn(input: Record<string, unknown>): Record<string, unknown> {
+    const messageId = stringValue(input.messageId) ?? crypto.randomUUID();
+    const rolesSpawned = arrayStringValue(input.rolesSpawned);
+    const record = {
+      messageId,
+      sessionKey: stringValue(input.sessionKey),
+      surfaceId: stringValue(input.surfaceId) ?? 'unknown',
+      targetId: stringValue(input.targetId) ?? 'unknown',
+      workflowMode: stringValue(input.workflowMode) ?? 'orchestrated',
+      lifecycleState: stringValue(input.lifecycleState) ?? 'working',
+      startedAt: stringValue(input.startedAt) ?? new Date().toISOString(),
+      updatedAt: stringValue(input.updatedAt) ?? new Date().toISOString(),
+      completedAt: stringValue(input.completedAt),
+      rolesSpawned,
+      brokerReused: booleanValue(input.brokerReused),
+      finalSummary: stringValue(input.finalSummary) ?? undefined,
+    };
+
+    this.sql.exec(
+      `INSERT INTO active_relay_turns
+       (message_id, session_key, surface_id, target_id, workflow_mode, lifecycle_state, started_at, updated_at,
+        completed_at, roles_spawned, broker_reused, final_summary)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(message_id) DO UPDATE SET
+         session_key = excluded.session_key,
+         surface_id = excluded.surface_id,
+         target_id = excluded.target_id,
+         workflow_mode = excluded.workflow_mode,
+         lifecycle_state = excluded.lifecycle_state,
+         started_at = excluded.started_at,
+         updated_at = excluded.updated_at,
+         completed_at = excluded.completed_at,
+         roles_spawned = excluded.roles_spawned,
+         broker_reused = excluded.broker_reused,
+         final_summary = excluded.final_summary`,
+      record.messageId,
+      record.sessionKey,
+      record.surfaceId,
+      record.targetId,
+      record.workflowMode,
+      record.lifecycleState,
+      record.startedAt,
+      record.updatedAt,
+      record.completedAt,
+      JSON.stringify(record.rolesSpawned),
+      record.brokerReused ? 1 : 0,
+      record.finalSummary,
+    );
+
+    return record;
+  }
+
+  private getActiveRelayTurn(messageId: string): Record<string, unknown> | null {
+    const row = this.sql.exec(
+      `SELECT message_id, session_key, surface_id, target_id, workflow_mode, lifecycle_state, started_at, updated_at,
+              completed_at, roles_spawned, broker_reused, final_summary
+       FROM active_relay_turns WHERE message_id = ?`,
+      messageId,
+    ).one();
+
+    return row ? fromActiveRelayTurnRow(row) : null;
+  }
+
   private async rescheduleAlarm(): Promise<void> {
     const next = this.sql.exec(
       `SELECT MIN(scheduled_at) AS next_at FROM workflow_state WHERE status = 'pending' AND scheduled_at IS NOT NULL`,
@@ -395,8 +478,15 @@ export class KarenUserDO {
 }
 
 function authorized(request: Request, env: Env): boolean {
-  if (!env.KAREN_STATE_TOKEN) return true;
+  if (!env.KAREN_STATE_TOKEN) {
+    return isLocalDevelopmentUrl(request.url);
+  }
   return request.headers.get('authorization') === `Bearer ${env.KAREN_STATE_TOKEN}`;
+}
+
+function isLocalDevelopmentUrl(url: string): boolean {
+  const hostname = new URL(url).hostname;
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
 }
 
 function json(body: unknown, status = 200): Response {
@@ -420,8 +510,46 @@ function fromSessionRow(row: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+function fromActiveRelayTurnRow(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    messageId: row.message_id,
+    sessionKey: row.session_key ?? null,
+    surfaceId: row.surface_id,
+    targetId: row.target_id,
+    workflowMode: row.workflow_mode,
+    lifecycleState: row.lifecycle_state,
+    startedAt: row.started_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at ?? null,
+    rolesSpawned: parseJsonArray(row.roles_spawned),
+    brokerReused: booleanValue(row.broker_reused),
+    finalSummary: stringValue(row.final_summary) ?? undefined,
+  };
+}
+
 function stringValue(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function arrayStringValue(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function parseJsonArray(value: unknown): string[] {
+  if (Array.isArray(value)) return arrayStringValue(value);
+  if (typeof value !== 'string') return [];
+  try {
+    return arrayStringValue(JSON.parse(value));
+  } catch {
+    return [];
+  }
+}
+
+function booleanValue(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') return value === 'true' || value === '1';
+  return false;
 }
 
 function numberValue(value: unknown): number {

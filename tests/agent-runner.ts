@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,6 +8,7 @@ import {
   setRelayFactoryForTesting,
   shutdownOpenKarenRelaySessions,
 } from '../src/agent-runner.js';
+import { statusText, type ActiveCodingTurn } from '../src/assistant.js';
 import type { OpenKarenConfig } from '../src/types.js';
 
 const normalResponse = 'Changed the response formatting and verified the routing test.';
@@ -123,6 +124,17 @@ async function assertOrchestratedRelayFlow(): Promise<void> {
       throw new Error(`Expected verifier output from orchestrated relay, got: ${first.text}`);
     }
 
+    const firstArtifact = await readLatestRunArtifact(dataDir);
+    assertRunArtifactShape(firstArtifact);
+    assertEqual(firstArtifact.messageId, 'telegram:1:10', 'relay artifact message id');
+    assertEqual(firstArtifact.sessionKey.length, 16, 'relay artifact session key length');
+    assertEqual(firstArtifact.workflowMode, 'orchestrated', 'relay artifact workflow');
+    assertEqual(firstArtifact.rolesSpawned.join(','), 'planner,implementer,reviewer,verifier', 'relay artifact roles');
+    assertEqual(firstArtifact.modelsOrPersonas[0], 'planner:model-architecture-planner', 'relay artifact model');
+    assertEqual(firstArtifact.brokerReused, false, 'fresh broker artifact state');
+    assertEqual(firstArtifact.waitStatus, 'idle', 'relay artifact wait status');
+    assertRelayStatusText(config, firstArtifact);
+
     const second = await runOpenKarenTurn(config, testTurn('telegram:1:11', 'Follow up'));
 
     assertEqual(relays.length, 1, 'relay session count');
@@ -156,6 +168,17 @@ function testConfig(dataDir: string): OpenKarenConfig {
     relaycronBaseUrl: null,
     relaycronApiKey: null,
     relaycronWebhookUrl: null,
+    dashboardEnabled: false,
+    dashboardPath: '/dashboard',
+    stateWorkerUrl: null,
+    stateWorkerAuthToken: null,
+    stateUserId: 'local',
+    identityBridgeMappings: new Map(),
+    slackEnabled: false,
+    slackSigningSecret: null,
+    slackAllowedChannelIds: new Set(),
+    slackBotToken: null,
+    slackWebhookPath: '/webhooks/slack',
     workforcePersonaDir: join(dataDir, 'personas'),
     workforceRoutingProfile: join(
       process.cwd(),
@@ -163,6 +186,7 @@ function testConfig(dataDir: string): OpenKarenConfig {
     ),
     nangoBaseUrl: null,
     nangoSecretKey: null,
+    nangoWebhookPath: '/webhooks/nango',
     rtkCommand: 'rtk',
     tilthCommand: 'tilth',
     burnCommand: 'burn-missing-agent-runner-test',
@@ -236,6 +260,9 @@ async function assertExistingBrokerReconnect(): Promise<void> {
     if (connectedRelays.length !== 1) {
       throw new Error(`Expected one reused relay client, got ${connectedRelays.length}`);
     }
+    const artifact = await readLatestRunArtifact(dataDir);
+    assertEqual(artifact.brokerReused, true, 'reused broker artifact state');
+    assertEqual(artifact.waitStatus, 'idle', 'reused broker wait status');
   } finally {
     await shutdownOpenKarenRelaySessions();
     setRelayFactoryForTesting(null);
@@ -243,8 +270,87 @@ async function assertExistingBrokerReconnect(): Promise<void> {
   }
 }
 
+type TestRunArtifact = {
+  messageId: string;
+  sessionKey: string;
+  workflowMode: string;
+  rolesSpawned: string[];
+  modelsOrPersonas: string[];
+  brokerReused: boolean;
+  startedAt: string;
+  completedAt: string;
+  waitStatus: string;
+  finalSummary: string;
+};
+
+async function readLatestRunArtifact(dataDir: string): Promise<TestRunArtifact> {
+  const runsDir = join(dataDir, 'runs');
+  const files = (await readdir(runsDir)).filter((file) => file.endsWith('.json')).sort();
+  const latest = files.at(-1);
+  if (!latest) {
+    throw new Error('Expected relay run artifact');
+  }
+
+  return JSON.parse(await readFile(join(runsDir, latest), 'utf8')) as TestRunArtifact;
+}
+
+function assertRunArtifactShape(artifact: TestRunArtifact): void {
+  assertEqual(
+    Object.keys(artifact).sort().join(','),
+    [
+      'brokerReused',
+      'completedAt',
+      'finalSummary',
+      'messageId',
+      'modelsOrPersonas',
+      'rolesSpawned',
+      'sessionKey',
+      'startedAt',
+      'waitStatus',
+      'workflowMode',
+    ].sort().join(','),
+    'relay artifact field inventory',
+  );
+
+  if (!Array.isArray(artifact.rolesSpawned) || !Array.isArray(artifact.modelsOrPersonas)) {
+    throw new Error(`Expected relay artifact arrays, got ${JSON.stringify(artifact)}`);
+  }
+
+  if (!artifact.startedAt || !artifact.completedAt || !artifact.finalSummary) {
+    throw new Error(`Expected relay artifact timestamps and summary, got ${JSON.stringify(artifact)}`);
+  }
+}
+
+function assertRelayStatusText(config: OpenKarenConfig, artifact: TestRunArtifact): void {
+  const activeTurn: ActiveCodingTurn = {
+    messageId: 'telegram:1:status',
+    targetId: '1',
+    surfaceId: 'telegram',
+    startedAt: '2026-05-20T10:00:00.000Z',
+    mode: 'relay',
+    lifecycleState: 'working',
+    text: 'Status coverage task',
+  };
+  const status = statusText(config, activeTurn);
+
+  assertIncludes(status, 'active: yes (telegram:1, 2026-05-20T10:00:00.000Z, still working)', 'active relay status');
+  assertIncludes(status, 'last relay run: idle', 'last relay run status');
+  assertIncludes(status, `last relay message: ${artifact.messageId}`, 'last relay message');
+  assertIncludes(status, `last relay session: ${artifact.sessionKey}`, 'last relay session');
+  assertIncludes(status, 'last relay workflow: orchestrated', 'last relay workflow');
+  assertIncludes(status, 'last relay roles: planner, implementer, reviewer, verifier', 'last relay roles');
+  assertIncludes(status, 'last relay broker: fresh', 'last relay broker');
+  assertIncludes(status, 'last relay summary:', 'last relay summary');
+}
+
 function roleFromName(name: string): string {
   return name.slice(name.lastIndexOf('-') + 1);
+}
+
+function assertIncludes(text: string, expected: string, label: string): void {
+  if (!text.includes(expected)) {
+    throw new Error(`Expected ${label} to include ${expected}, got: ${text}`);
+  }
 }
 
 function assertEqual<T>(actual: T, expected: T, label: string): void {
