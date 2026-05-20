@@ -117,8 +117,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OpenKarenConfi
       DEFAULT_RELAY_PROGRESS_INTERVAL_MS,
       'OPENKAREN_AGENT_RELAY_PROGRESS_INTERVAL_MS',
     ),
-    questionRouterModel: normalizeOptional(resolvedEnv.OPENKAREN_QUESTION_ROUTER_MODEL),
-    questionRouterCli: normalizeOptional(resolvedEnv.OPENKAREN_QUESTION_ROUTER_CLI) ?? 'codex',
+    decisionModel: normalizeOptional(
+      resolvedEnv.OPENKAREN_DECISION_MODEL ?? resolvedEnv.OPENKAREN_QUESTION_ROUTER_MODEL,
+    ),
+    decisionCli: normalizeOptional(
+      resolvedEnv.OPENKAREN_DECISION_CLI ?? resolvedEnv.OPENKAREN_QUESTION_ROUTER_CLI,
+    ) ?? 'codex',
     dataDir,
     pollTimeoutSeconds: parsePositiveInt(
       resolvedEnv.OPENKAREN_TELEGRAM_POLL_TIMEOUT_SECONDS,

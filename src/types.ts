@@ -49,8 +49,8 @@ export type OpenKarenConfig = {
   agentRelayNamePrefix: string;
   agentRelayIdleThresholdSecs: number;
   agentRelayProgressIntervalMs: number;
-  questionRouterModel: string | null;
-  questionRouterCli: string | null;
+  decisionModel: string | null;
+  decisionCli: string | null;
   dataDir: string;
   pollTimeoutSeconds: number;
 };

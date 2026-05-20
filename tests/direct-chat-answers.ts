@@ -55,8 +55,8 @@ try {
     agentRelayNamePrefix: 'OpenKarenCoder',
     agentRelayIdleThresholdSecs: 20,
     agentRelayProgressIntervalMs: 120_000,
-    questionRouterModel: null,
-    questionRouterCli: 'codex',
+    decisionModel: null,
+    decisionCli: 'codex',
     dataDir,
     pollTimeoutSeconds: 1,
   };

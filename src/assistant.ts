@@ -1151,7 +1151,7 @@ async function decideNormalMessageAction(
 ): Promise<QuestionRoute> {
   const forcedChatRoute = forcedCasualChatRoute(text);
 
-  if (!config.questionRouterModel) {
+  if (!config.decisionModel) {
     return forcedChatRoute ?? fallbackQuestionRoute(text);
   }
 

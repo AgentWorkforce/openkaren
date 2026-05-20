@@ -102,8 +102,8 @@ function liveConfig(dataDir: string, agentCwd: string): OpenKarenConfig {
     agentRelayNamePrefix: 'OpenKarenLive',
     agentRelayIdleThresholdSecs: 5,
     agentRelayProgressIntervalMs: 120_000,
-    questionRouterModel: null,
-    questionRouterCli: 'codex',
+    decisionModel: null,
+    decisionCli: 'codex',
     dataDir,
     pollTimeoutSeconds: 1,
   };

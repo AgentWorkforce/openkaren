@@ -323,7 +323,7 @@ await assertTelegramRouterScenario('/doctor', {
   },
 });
 
-console.log('question router runtime ok');
+console.log('decision runtime ok');
 
 if (process.env.VITEST === 'true') {
   const vitest = await import('vitest');
@@ -494,8 +494,8 @@ function testConfig(dataDir: string, decisionEnabled: boolean): OpenKarenConfig 
     agentRelayNamePrefix: 'OpenKarenCoder',
     agentRelayIdleThresholdSecs: 20,
     agentRelayProgressIntervalMs: 120_000,
-    questionRouterModel: decisionEnabled ? 'gpt-test-router' : null,
-    questionRouterCli: 'codex',
+    decisionModel: decisionEnabled ? 'gpt-test-router' : null,
+    decisionCli: 'codex',
     dataDir,
     pollTimeoutSeconds: 1,
   };

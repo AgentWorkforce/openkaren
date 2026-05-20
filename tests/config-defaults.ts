@@ -37,8 +37,8 @@ try {
   assertEqual(config.burnCommand, 'burn', 'default burn command');
   assertEqual(config.washCommand, 'wash', 'default wash command');
   assertEqual(config.tokensaveCommand, 'tokensave', 'default tokensave command');
-  assertEqual(config.questionRouterModel, null, 'default question router model');
-  assertEqual(config.questionRouterCli, 'codex', 'default question router cli');
+  assertEqual(config.decisionModel, null, 'default decision model');
+  assertEqual(config.decisionCli, 'codex', 'default decision cli');
 
   const commandConfig = loadConfig({
     TELEGRAM_BOT_TOKEN: 'test-token',
@@ -58,12 +58,12 @@ try {
   const routerConfig = loadConfig({
     TELEGRAM_BOT_TOKEN: 'test-token',
     OPENKAREN_DATA_DIR: dataDir,
-    OPENKAREN_QUESTION_ROUTER_MODEL: 'gpt-test-router',
-    OPENKAREN_QUESTION_ROUTER_CLI: 'codex',
+    OPENKAREN_DECISION_MODEL: 'gpt-test-router',
+    OPENKAREN_DECISION_CLI: 'codex',
   });
 
-  assertEqual(routerConfig.questionRouterModel, 'gpt-test-router', 'question router model env');
-  assertEqual(routerConfig.questionRouterCli, 'codex', 'question router cli env');
+  assertEqual(routerConfig.decisionModel, 'gpt-test-router', 'decision model env');
+  assertEqual(routerConfig.decisionCli, 'codex', 'decision cli env');
 
   const bridgeConfig = loadConfig({
     TELEGRAM_BOT_TOKEN: 'test-token',
@@ -96,8 +96,8 @@ try {
       'OPENKAREN_AGENT_MODE=relay',
       'OPENKAREN_AGENT_COMMAND=',
       'OPENKAREN_RELAYCAST_ENABLED=true',
-      'OPENKAREN_QUESTION_ROUTER_MODEL=gpt-env-file-router',
-      'OPENKAREN_QUESTION_ROUTER_CLI=codex',
+      'OPENKAREN_DECISION_MODEL=gpt-env-file-router',
+      'OPENKAREN_DECISION_CLI=codex',
       'OPENKAREN_RELAYCRON_BASE_URL=http://127.0.0.1:4007',
       'OPENKAREN_RELAYCRON_API_KEY=ac_test',
       'OPENKAREN_RELAYCRON_WEBHOOK_URL=http://127.0.0.1:7528/webhooks/relaycron',
@@ -113,8 +113,8 @@ try {
 
   assertEqual(envFileConfig.agentMode, 'relay', '.env overrides inherited agent mode');
   assertEqual(envFileConfig.agentCommand, null, '.env clears inherited agent command');
-  assertEqual(envFileConfig.questionRouterModel, 'gpt-env-file-router', '.env question router model');
-  assertEqual(envFileConfig.questionRouterCli, 'codex', '.env question router cli');
+  assertEqual(envFileConfig.decisionModel, 'gpt-env-file-router', '.env decision model');
+  assertEqual(envFileConfig.decisionCli, 'codex', '.env decision cli');
   assertEqual(envFileConfig.relaycastEnabled, true, '.env relaycast enabled');
   assertEqual(
     envFileConfig.relaycronWebhookUrl,

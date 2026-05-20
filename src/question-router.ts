@@ -7,7 +7,7 @@ import type {
   QuestionRouterRoute,
 } from './types.js';
 
-type RouterEnv = Pick<OpenKarenConfig, 'questionRouterModel' | 'questionRouterCli' | 'agentCwd'>;
+type RouterEnv = Pick<OpenKarenConfig, 'decisionModel' | 'decisionCli' | 'agentCwd'>;
 
 type RouterHarnessRunner = (prompt: string, env: RouterEnv) => Promise<string | null>;
 
@@ -32,7 +32,7 @@ export async function decideQuestionRoute(
   context: QuestionRouterContextPacket,
   env: RouterEnv,
 ): Promise<QuestionRouterDecision | null> {
-  if (!env.questionRouterModel) {
+  if (!env.decisionModel) {
     return null;
   }
 
@@ -65,13 +65,13 @@ export async function decideQuestionRoute(
 }
 
 async function runRouterHarnessPrompt(prompt: string, env: RouterEnv): Promise<string | null> {
-  const cli = env.questionRouterCli ?? 'codex';
+  const cli = env.decisionCli ?? 'codex';
   if (cli !== 'codex') {
     return null;
   }
 
   return await new Promise((resolve) => {
-    const child = spawn(cli, ['exec', '--skip-git-repo-check', '--model', env.questionRouterModel as string, prompt], {
+    const child = spawn(cli, ['exec', '--skip-git-repo-check', '--model', env.decisionModel as string, prompt], {
       cwd: env.agentCwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],

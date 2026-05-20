@@ -204,8 +204,8 @@ function testConfig(dataDir: string): OpenKarenConfig {
     agentRelayNamePrefix: 'OpenKarenCoder',
     agentRelayIdleThresholdSecs: 1,
     agentRelayProgressIntervalMs: 120_000,
-    questionRouterModel: null,
-    questionRouterCli: 'codex',
+    decisionModel: null,
+    decisionCli: 'codex',
     dataDir,
     pollTimeoutSeconds: 1,
   };
