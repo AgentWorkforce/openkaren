@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { getLogs as getRelaySdkLogs } from '@agent-relay/sdk';
 import { integrationPrompt } from './integrations.js';
 import { writeRelayRunArtifact, type RelayLifecycleState, type RelayRunWaitStatus } from './relay-evidence.js';
 import { createKarenStateClient } from './state.js';
@@ -33,6 +34,7 @@ const ORCHESTRATED_RELAY_ROLES = [
 
 type RelayAgentHandle = {
   name: string;
+  waitForReady?(timeoutMs?: number): Promise<void>;
   waitForIdle(timeoutMs?: number): Promise<RelayWaitStatus>;
   release(options?: string | { reason?: string }): Promise<void>;
 };
@@ -65,13 +67,38 @@ type RelayHandle = {
     agentName: string,
     options?: { lines?: number },
   ): Promise<{ found: boolean; content?: string }>;
+  listAgents?(): Promise<Array<RelayAgentHandle>>;
   shutdown(): Promise<void>;
 };
 
 type RelayConstructor = new (options: Record<string, unknown>) => RelayHandle;
 
+type RelayClient = {
+  onEvent(listener: (event: Record<string, unknown>) => void): () => void;
+  spawnPty(input: {
+    name: string;
+    cli: string;
+    task?: string;
+    channels?: string[];
+    cwd?: string;
+    idleThresholdSecs?: number;
+    model?: string;
+    skipRelayPrompt?: boolean;
+  }): Promise<{ name: string }>;
+  sendMessage(input: {
+    to: string;
+    text: string;
+    from: string;
+    threadId?: string;
+    priority?: number;
+    data?: Record<string, unknown>;
+  }): Promise<unknown>;
+  listAgents(): Promise<Array<{ name: string }>>;
+  shutdown(): Promise<void>;
+};
+
 type RelayClientFactory = {
-  connect(options: { cwd: string }): unknown;
+  connect(options: { cwd: string; connectionPath?: string }): RelayClient;
 };
 
 type RelaySession = {
@@ -91,6 +118,7 @@ type RelaySessionAgent = {
   workerOutput: string;
   lastLogText: string;
   turns: number;
+  reattached?: boolean;
 };
 
 type RelayExecutionStage =
@@ -114,6 +142,7 @@ type RelayExecutionLifecycle = {
 
 let relayFactory: () => Promise<{ AgentRelay: RelayConstructor; AgentRelayClient?: RelayClientFactory }> = async () =>
   import('@agent-relay/sdk') as Promise<{ AgentRelay: RelayConstructor; AgentRelayClient?: RelayClientFactory }>;
+let relayLogReaderForTesting: ((agentName: string, stateDir: string, lines?: number) => Promise<{ found: boolean; content?: string }>) | null = null;
 
 const relaySessions = new Map<string, Promise<RelaySession>>();
 const relayTurnLocks = new Map<string, Promise<void>>();
@@ -363,6 +392,9 @@ async function runSingleRelayTurn(
   member.workerOutput = '';
 
   if (member.turns > 0) {
+    if (member.agent.waitForReady) {
+      await member.agent.waitForReady(config.agentTimeoutMs);
+    }
     await sendRelayTurn(session, member, buildFollowupPrompt(config, turn));
   }
 
@@ -400,6 +432,9 @@ async function runOrchestratedRelayTurn(
     member.workerOutput = '';
 
     if (member.turns > 0) {
+      if (member.agent.waitForReady) {
+        await member.agent.waitForReady(config.agentTimeoutMs);
+      }
       await sendRelayTurn(session, member, prompt);
     }
 
@@ -511,7 +546,10 @@ async function waitForRelayMember(
 ): Promise<{ waitStatus: RelayWaitStatus; output: string }> {
   session.lifecycle.currentStage = 'waiting_for_result';
   session.lifecycle.lastRole = member.role;
-  const waitStatus = await member.agent.waitForIdle(config.agentTimeoutMs);
+  const shouldSkipIdleWait = member.reattached && member.turns === 0;
+  const waitStatus = shouldSkipIdleWait
+    ? 'idle'
+    : await member.agent.waitForIdle(config.agentTimeoutMs);
   member.turns += 1;
   console.info('OpenKaren relay agent wait finished', {
     agentName: member.agent.name,
@@ -592,64 +630,328 @@ async function createRelaySession(
       localRelayCredentials: relayRuntime.usingLocalCredentials,
     });
 
+    if (AgentRelayClient) {
+      try {
+        const connectedClient = AgentRelayClient.connect({
+          cwd: config.agentCwd,
+          connectionPath: join(relayStateDir, 'connection.json'),
+        });
+        relay = createConnectedRelayHandle(connectedClient, config.agentCwd, relayStateDir, session);
+        session.lifecycle.brokerReuse = 'reused';
+        session.lifecycle.currentStage = 'broker_reused';
+      } catch {
+        relay = null;
+      }
+    }
+
+    if (!relay) {
+      try {
+        relay = new AgentRelay({
+          cwd: config.agentCwd,
+          channels: [config.agentRelayChannel],
+          env: relayRuntime.env,
+          workspaceId: relayRuntime.workspaceId,
+          workspaceName: 'OpenKaren development relay',
+          binaryArgs: {
+            persist: true,
+            stateDir: relayStateDir,
+          },
+        }) as RelayHandle;
+      } catch (error) {
+        relay = connectToExistingRelayBrokerOrThrow(error, AgentRelayClient, config.agentCwd, relayStateDir, session);
+      }
+    }
+
     try {
-      relay = new AgentRelay({
-        cwd: config.agentCwd,
-        channels: [config.agentRelayChannel],
-        env: relayRuntime.env,
-        workspaceId: relayRuntime.workspaceId,
-        workspaceName: 'OpenKaren development relay',
-        binaryArgs: {
-          persist: true,
-          stateDir: relayStateDir,
-        },
-      }) as RelayHandle;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!message.includes('another broker instance is already running in this directory') || !AgentRelayClient) {
-        throw error;
+      session.relay = relay;
+      if (session.lifecycle.currentStage !== 'broker_reused') {
+        session.lifecycle.currentStage = 'session_ready';
       }
-
-      console.warn('OpenKaren reusing existing relay broker', {
-        cwd: config.agentCwd,
-        stateDir: relayStateDir,
-        brokerReused: true,
+      if (session.lifecycle.brokerReuse === 'reused') {
+        await seedExistingRelayAgents(session);
+      }
+      console.info('OpenKaren relay broker reuse status', {
+        sessionKey,
+        brokerReused: session.lifecycle.brokerReuse === 'reused',
       });
-      relay = AgentRelayClient.connect({ cwd: config.agentCwd }) as RelayHandle;
-      session.lifecycle.brokerReuse = 'reused';
-      session.lifecycle.currentStage = 'broker_reused';
+
+      relay.onWorkerOutput = ({ name, chunk }: { name?: string; chunk: string }) => {
+        const target = name
+          ? session.agents.find((member) => member.agent.name === name || member.agentName === name)
+          : null;
+        if (target) {
+          target.workerOutput = appendBounded(target.workerOutput, chunk);
+        } else {
+          session.unscopedWorkerOutput = appendBounded(session.unscopedWorkerOutput, chunk);
+        }
+      };
+
+      relay.onBrokerStderr?.((line) => {
+        session.brokerStderr = appendBounded(session.brokerStderr, `${line}\n`);
+      });
+
+      return session;
+    } catch (error) {
+      const reusedRelay = connectToExistingRelayBrokerOrThrow(error, AgentRelayClient, config.agentCwd, relayStateDir, session);
+      session.relay = reusedRelay;
+      await seedExistingRelayAgents(session);
+      console.info('OpenKaren relay broker reuse status', {
+        sessionKey,
+        brokerReused: session.lifecycle.brokerReuse === 'reused',
+      });
+
+      reusedRelay.onWorkerOutput = ({ name, chunk }: { name?: string; chunk: string }) => {
+        const target = name
+          ? session.agents.find((member) => member.agent.name === name || member.agentName === name)
+          : null;
+        if (target) {
+          target.workerOutput = appendBounded(target.workerOutput, chunk);
+        } else {
+          session.unscopedWorkerOutput = appendBounded(session.unscopedWorkerOutput, chunk);
+        }
+      };
+
+      reusedRelay.onBrokerStderr?.((line) => {
+        session.brokerStderr = appendBounded(session.brokerStderr, `${line}\n`);
+      });
+
+      return session;
     }
-
-    session.relay = relay;
-    if (session.lifecycle.currentStage !== 'broker_reused') {
-      session.lifecycle.currentStage = 'session_ready';
-    }
-    console.info('OpenKaren relay broker reuse status', {
-      sessionKey,
-      brokerReused: session.lifecycle.brokerReuse === 'reused',
-    });
-
-    relay.onWorkerOutput = ({ name, chunk }: { name?: string; chunk: string }) => {
-      const target = name
-        ? session.agents.find((member) => member.agent.name === name || member.agentName === name)
-        : null;
-      if (target) {
-        target.workerOutput = appendBounded(target.workerOutput, chunk);
-      } else {
-        session.unscopedWorkerOutput = appendBounded(session.unscopedWorkerOutput, chunk);
-      }
-    };
-
-    relay.onBrokerStderr?.((line) => {
-      session.brokerStderr = appendBounded(session.brokerStderr, `${line}\n`);
-    });
-
-    return session;
   } catch (error) {
-    await relay?.shutdown().catch(() => {});
     throw error;
   }
 }
+
+async function seedExistingRelayAgents(session: RelaySession): Promise<void> {
+  const existingAgents = await session.relay.listAgents?.().catch(() => []) ?? [];
+  for (const agent of existingAgents) {
+    if (session.agents.some((member) => member.agent.name === agent.name || member.agentName === agent.name)) {
+      continue;
+    }
+    const role = inferRelayRoleFromAgentName(agent.name);
+    if (!role) {
+      continue;
+    }
+    session.agents.push({
+      role,
+      agent,
+      agentName: agent.name,
+      modelOrPersona: `${role}:reattached`,
+      workerOutput: '',
+      lastLogText: '',
+      turns: 0,
+      reattached: true,
+    });
+  }
+}
+
+function inferRelayRoleFromAgentName(name: string): RelayAgentRole | null {
+  if (name.endsWith('-planner')) return 'planner';
+  if (name.endsWith('-implementer')) return 'implementer';
+  if (name.endsWith('-reviewer')) return 'reviewer';
+  if (name.endsWith('-verifier')) return 'verifier';
+  return null;
+}
+
+function createConnectedRelayHandle(
+  client: RelayClient,
+  cwd: string,
+  stateDir: string,
+  session: RelaySession,
+): RelayHandle {
+  const knownAgents = new Map<string, RelayAgentHandle>();
+  const readyAgents = new Set<string>();
+  const messageReadyAgents = new Set<string>();
+  const idleResolvers = new Map<string, Array<(status: RelayWaitStatus) => void>>();
+  const readyResolvers = new Map<string, Array<() => void>>();
+
+  const resolveIdle = (name: string, status: RelayWaitStatus) => {
+    const resolvers = idleResolvers.get(name) ?? [];
+    idleResolvers.delete(name);
+    for (const resolve of resolvers) resolve(status);
+  };
+
+  const resolveReady = (name: string) => {
+    const resolvers = readyResolvers.get(name) ?? [];
+    readyResolvers.delete(name);
+    for (const resolve of resolvers) resolve();
+  };
+
+  const markAgentReady = (name: string) => {
+    readyAgents.add(name);
+    messageReadyAgents.add(name);
+    resolveReady(name);
+  };
+
+  const ensureAgentHandle = (name: string): RelayAgentHandle => {
+    const existing = knownAgents.get(name);
+    if (existing) {
+      return existing;
+    }
+    const handle: RelayAgentHandle = {
+      name,
+      async waitForReady(timeoutMs = 60_000) {
+        if (messageReadyAgents.has(name) || readyAgents.has(name)) {
+          return;
+        }
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            reject(new Error(`Timed out waiting for relay agent '${name}' to become ready after ${timeoutMs}ms`));
+          }, timeoutMs);
+          const current = readyResolvers.get(name) ?? [];
+          current.push(() => {
+            clearTimeout(timer);
+            resolve();
+          });
+          readyResolvers.set(name, current);
+        });
+      },
+      async waitForIdle(timeoutMs) {
+        if (timeoutMs === 0) {
+          return 'timeout';
+        }
+        return await new Promise<RelayWaitStatus>((resolve) => {
+          const timer = timeoutMs === undefined ? null : setTimeout(() => {
+            resolve('timeout');
+          }, timeoutMs);
+          const current = idleResolvers.get(name) ?? [];
+          current.push((status) => {
+            if (timer) clearTimeout(timer);
+            resolve(status);
+          });
+          idleResolvers.set(name, current);
+        });
+      },
+      async release(options) {
+        const reason = typeof options === 'string' ? options : options?.reason;
+        await client.sendMessage({ to: name, from: 'OpenKaren Telegram', text: '/exit', data: reason ? { reason } : undefined });
+      },
+    };
+    knownAgents.set(name, handle);
+    return handle;
+  };
+
+  const relayHandle: RelayHandle = {
+    onWorkerOutput: null,
+    onBrokerStderr(listener) {
+      return () => listener;
+    },
+    async spawnPty(input) {
+      const spawned = await client.spawnPty(input);
+      return ensureAgentHandle(spawned.name);
+    },
+    human(options) {
+      return {
+        async sendMessage(input) {
+          await client.sendMessage({
+            to: input.to,
+            text: input.text,
+            from: options.name,
+            threadId: input.threadId,
+            priority: input.priority,
+            data: input.data,
+          });
+          return {};
+        },
+      };
+    },
+    async getLogs(agentName, options) {
+      if (relayLogReaderForTesting) {
+        return await relayLogReaderForTesting(agentName, stateDir, options?.lines);
+      }
+      return await getRelaySdkLogs(agentName, {
+        logsDir: join(stateDir, 'worker-logs'),
+        lines: options?.lines,
+      });
+    },
+    async listAgents() {
+      const agents = await client.listAgents();
+      return agents.map((agent) => {
+        const handle = ensureAgentHandle(agent.name);
+        markAgentReady(agent.name);
+        return handle;
+      });
+    },
+    async shutdown() {
+      unsubscribe();
+      await client.shutdown();
+    },
+  };
+
+  const unsubscribe = client.onEvent((event) => {
+    const kind = typeof event.kind === 'string' ? event.kind : null;
+    if (!kind) return;
+
+    if (kind === 'worker_stream') {
+      const name = typeof event.name === 'string' ? event.name : undefined;
+      const chunk = typeof event.chunk === 'string' ? event.chunk : '';
+      if (name && chunk) {
+        relayHandle.onWorkerOutput?.({ name, chunk });
+      }
+      return;
+    }
+
+    if (kind === 'worker_ready' || kind === 'relay_inbound') {
+      const name = kind === 'worker_ready'
+        ? (typeof event.name === 'string' ? event.name : undefined)
+        : (typeof event.from === 'string' ? event.from : undefined);
+      if (name) {
+        ensureAgentHandle(name);
+        markAgentReady(name);
+        if (kind === 'relay_inbound') {
+          resolveIdle(name, 'idle');
+        }
+      }
+      return;
+    }
+
+    if (kind === 'agent_idle') {
+      const name = typeof event.name === 'string' ? event.name : undefined;
+      if (name) {
+        resolveIdle(name, 'idle');
+      }
+      return;
+    }
+
+    if (kind === 'agent_exited' || kind === 'agent_released') {
+      const name = typeof event.name === 'string' ? event.name : undefined;
+      if (name) {
+        resolveIdle(name, 'exited');
+      }
+    }
+  });
+
+  return relayHandle;
+}
+
+function connectToExistingRelayBrokerOrThrow(
+  error: unknown,
+  agentRelayClient: RelayClientFactory | undefined,
+  cwd: string,
+  stateDir: string,
+  session: RelaySession,
+): RelayHandle {
+  const message = error instanceof Error ? error.message : String(error);
+  const canReuseExistingBroker = message.includes('another broker instance is already running in this directory');
+
+  if (!canReuseExistingBroker || !agentRelayClient) {
+    throw error;
+  }
+
+  console.warn('OpenKaren reusing existing relay broker', {
+    cwd,
+    stateDir,
+    brokerReused: true,
+  });
+  session.lifecycle.brokerReuse = 'reused';
+  session.lifecycle.currentStage = 'broker_reused';
+  const connectedClient = agentRelayClient.connect({
+    cwd,
+    connectionPath: join(stateDir, 'connection.json'),
+  });
+  return createConnectedRelayHandle(connectedClient, cwd, stateDir, session);
+}
+
 
 async function materializeRelayRunArtifact(
   config: OpenKarenConfig,
@@ -878,6 +1180,12 @@ export function setRelayFactoryForTesting(
 ): void {
   relayFactory = factory ?? (async () =>
     import('@agent-relay/sdk') as Promise<{ AgentRelay: RelayConstructor; AgentRelayClient?: RelayClientFactory }>);
+}
+
+export function setRelayLogReaderForTesting(
+  reader: ((agentName: string, stateDir: string, lines?: number) => Promise<{ found: boolean; content?: string }>) | null,
+): void {
+  relayLogReaderForTesting = reader;
 }
 
 async function readRelayLogs(
@@ -1144,28 +1452,66 @@ export function formatRelayResult(input: {
 
 function shapeRelayCompletion(output: string): string {
   const normalized = stripAnsi(output)
+    .replace(/\u0007/g, '')
     .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
     .trim();
 
   if (!normalized) {
     return '';
   }
 
-  if (/^(changed|updated|fixed|implemented|verified|queued|reviewed|added)\b/i.test(normalized)) {
-    return normalized;
+  const cleanedLines = normalized
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !isRelayUiNoiseLine(line));
+
+  if (cleanedLines.length === 0) {
+    return '';
   }
 
-  if (/^\[[^\]]+\]\s*$/m.test(normalized) || normalized.includes('[verifier]')) {
-    const lines = normalized
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .filter((line) => !/^\[[^\]]+\]$/.test(line));
+  const cleaned = cleanedLines.join('\n').trim();
+
+  if (/^(changed|updated|fixed|implemented|verified|queued|reviewed|added)\b/i.test(cleaned)) {
+    return cleaned;
+  }
+
+  if (/^\[[^\]]+\]\s*$/m.test(cleaned) || cleaned.includes('[verifier]')) {
+    const lines = cleanedLines.filter((line) => !/^\[[^\]]+\]$/.test(line));
     const collapsed = lines.join('\n').trim();
-    return collapsed || normalized;
+    return collapsed || cleaned;
   }
 
-  return normalized;
+  const candidateBlocks = cleaned
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .filter((block) => !isRelayUiNoiseBlock(block));
+
+  return candidateBlocks.at(-1) ?? cleaned;
+}
+
+function isRelayUiNoiseLine(line: string): boolean {
+  return /^Tip:/i.test(line)
+    || /^model:/i.test(line)
+    || /^directory:/i.test(line)
+    || /^permissions:/i.test(line)
+    || /^>_\s+/i.test(line)
+    || /^OpenAI Codex/i.test(line)
+    || /^Starting MCP servers/i.test(line)
+    || /^Booting MCP server/i.test(line)
+    || /^Implement \{feature\}/i.test(line)
+    || /^[•◦⠋⠏⠙⠹⠸⠼]+/.test(line)
+    || /^[╭╰│─]+$/.test(line)
+    || /^esc to interrupt\)?$/i.test(line)
+    || /^\/model to change$/i.test(line)
+    || /^~/i.test(line) && line.includes('/openkaren');
+}
+
+function isRelayUiNoiseBlock(block: string): boolean {
+  const simplified = block.replace(/\s+/g, ' ').trim();
+  return simplified.length < 24 && /^(starting|booting|implement|openkaren|codex_apps|relaycast)$/i.test(simplified);
 }
 
 function compactTelegramText(text: string): string {

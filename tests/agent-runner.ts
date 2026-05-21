@@ -6,6 +6,7 @@ import {
   formatRelayResult,
   runOpenKarenTurn,
   setRelayFactoryForTesting,
+  setRelayLogReaderForTesting,
   shutdownOpenKarenRelaySessions,
 } from '../src/agent-runner.js';
 import { statusText, type ActiveCodingTurn } from '../src/assistant.js';
@@ -232,7 +233,12 @@ function testTurn(id: string, text: string) {
 async function assertExistingBrokerReconnect(): Promise<void> {
   const dataDir = await mkdtemp(join(tmpdir(), 'openkaren-agent-runner-reconnect-'));
   await writePersonas(dataDir);
-  const connectedRelays: MockRelay[] = [];
+  const connectedClients: MockRelayClient[] = [];
+
+  setRelayLogReaderForTesting(async (agentName) => ({
+    found: true,
+    content: `${roleFromName(agentName)} output follow-up`,
+  }));
 
   setRelayFactoryForTesting(async () => ({
     AgentRelay: class FailingRelay extends MockRelay {
@@ -242,10 +248,10 @@ async function assertExistingBrokerReconnect(): Promise<void> {
       }
     },
     AgentRelayClient: {
-      connect: (_options: { cwd: string }) => {
-        const relay = new MockRelay({ reused: true });
-        connectedRelays.push(relay);
-        return relay;
+      connect: (_options: { cwd: string; connectionPath?: string }) => {
+        const client = new MockRelayClient();
+        connectedClients.push(client);
+        return client;
       },
     },
   }));
@@ -257,14 +263,66 @@ async function assertExistingBrokerReconnect(): Promise<void> {
     if (!result.text.includes('verifier output')) {
       throw new Error(`Expected reused broker flow to succeed, got: ${result.text}`);
     }
-    if (connectedRelays.length !== 1) {
-      throw new Error(`Expected one reused relay client, got ${connectedRelays.length}`);
+    if (connectedClients.length !== 1) {
+      throw new Error(`Expected one reused relay client, got ${connectedClients.length}`);
     }
     const artifact = await readLatestRunArtifact(dataDir);
     assertEqual(artifact.brokerReused, true, 'reused broker artifact state');
     assertEqual(artifact.waitStatus, 'idle', 'reused broker wait status');
   } finally {
     await shutdownOpenKarenRelaySessions();
+    setRelayLogReaderForTesting(null);
+    setRelayFactoryForTesting(null);
+    await rm(dataDir, { recursive: true, force: true });
+  }
+}
+
+async function assertAsyncExistingBrokerReconnect(): Promise<void> {
+  const dataDir = await mkdtemp(join(tmpdir(), 'openkaren-agent-runner-async-reconnect-'));
+  await writePersonas(dataDir);
+  const connectedClients: MockRelayClient[] = [];
+
+  setRelayLogReaderForTesting(async (agentName) => ({
+    found: true,
+    content: `${roleFromName(agentName)} output follow-up`,
+  }));
+
+  setRelayFactoryForTesting(async () => ({
+    AgentRelay: class AsyncFailingRelay extends MockRelay {
+      constructor(options: Record<string, unknown>) {
+        super(options);
+      }
+
+      override onBrokerStderr(listener: (line: string) => void): () => void {
+        listener('Error: another broker instance is already running in this directory (pid: 6049)');
+        throw new Error('Broker process exited with code 1 before becoming ready (stderr_tail=Error: another broker instance is already running in this directory (pid: 6049))');
+      }
+    },
+    AgentRelayClient: {
+      connect: (_options: { cwd: string; connectionPath?: string }) => {
+        const client = new MockRelayClient();
+        connectedClients.push(client);
+        return client;
+      },
+    },
+  }));
+
+  try {
+    const config = testConfig(dataDir);
+    const result = await runOpenKarenTurn(config, testTurn('telegram:3:10', 'Reconnect after async broker startup failure'));
+
+    if (!result.text.includes('verifier output')) {
+      throw new Error(`Expected async reused broker flow to succeed, got: ${result.text}`);
+    }
+    if (connectedClients.length !== 1) {
+      throw new Error(`Expected one async reused relay client, got ${connectedClients.length}`);
+    }
+    const artifact = await readLatestRunArtifact(dataDir);
+    assertEqual(artifact.brokerReused, true, 'async reused broker artifact state');
+    assertEqual(artifact.waitStatus, 'idle', 'async reused broker wait status');
+  } finally {
+    await shutdownOpenKarenRelaySessions();
+    setRelayLogReaderForTesting(null);
     setRelayFactoryForTesting(null);
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -402,6 +460,8 @@ class MockRelay {
 class MockAgent {
   constructor(readonly name: string) {}
 
+  async waitForReady(): Promise<void> {}
+
   async waitForIdle(): Promise<'idle'> {
     return 'idle';
   }
@@ -409,8 +469,49 @@ class MockAgent {
   async release(): Promise<void> {}
 }
 
+class MockRelayClient {
+  private readonly relay = new MockRelay({ reused: true });
+  private listener: ((event: Record<string, unknown>) => void) | null = null;
+  private readonly existingAgents = [
+    'OpenKarenCoder-telegram_1-773e8f78-planner',
+    'OpenKarenCoder-telegram_1-773e8f78-implementer',
+    'OpenKarenCoder-telegram_1-773e8f78-reviewer',
+    'OpenKarenCoder-telegram_1-773e8f78-verifier',
+  ];
+
+  onEvent(listener: (event: Record<string, unknown>) => void): () => void {
+    this.listener = listener;
+    return () => {
+      if (this.listener === listener) this.listener = null;
+    };
+  }
+
+  async spawnPty(input: { name: string; task?: string; model?: string }): Promise<{ name: string }> {
+    const agent = await this.relay.spawnPty(input);
+    this.listener?.({ kind: 'worker_ready', name: agent.name });
+    this.listener?.({ kind: 'agent_idle', name: agent.name, idle_secs: 1 });
+    return { name: agent.name };
+  }
+
+  async sendMessage(input: { to: string; text: string; threadId?: string }): Promise<unknown> {
+    await this.relay.human().sendMessage(input);
+    this.listener?.({ kind: 'relay_inbound', from: input.to, event_id: `evt_${input.to}`, body: input.text });
+    queueMicrotask(() => {
+      this.listener?.({ kind: 'agent_idle', name: input.to, idle_secs: 1 });
+    });
+    return {};
+  }
+
+  async listAgents(): Promise<Array<{ name: string }>> {
+    return this.existingAgents.map((name) => ({ name }));
+  }
+
+  async shutdown(): Promise<void> {}
+}
+
 await assertOrchestratedRelayFlow();
 await assertExistingBrokerReconnect();
+await assertAsyncExistingBrokerReconnect();
 
 console.log('agent runner ok');
 
