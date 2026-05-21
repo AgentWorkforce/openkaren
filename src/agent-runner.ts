@@ -281,6 +281,12 @@ async function runRelay(
   turn: OpenKarenTurn,
 ): Promise<AgentRunResult> {
   const sessionKey = relaySessionKey(config, turn);
+  console.info('OpenKaren relay turn queued', {
+    messageId: turn.message.id,
+    sessionKey,
+    hasExistingLock: relayTurnLocks.has(sessionKey),
+    hasExistingSession: relaySessions.has(sessionKey),
+  });
   const previousTurn = relayTurnLocks.get(sessionKey) ?? Promise.resolve();
   let releaseTurnLock = () => {};
 
@@ -292,6 +298,10 @@ async function runRelay(
 
   try {
     await previousTurn.catch(() => {});
+    console.info('OpenKaren relay turn starting execution', {
+      messageId: turn.message.id,
+      sessionKey,
+    });
     return await runRelayTurn(config, turn, sessionKey);
   } finally {
     releaseTurnLock();
@@ -349,6 +359,7 @@ async function runRelayTurn(
       finalSummary: result.text,
     });
 
+    relaySessions.delete(sessionKey);
     return result;
   } catch (error) {
     const failureStatus: RelayRunWaitStatus = session ? 'failed_during_execution' : 'failed_to_start';
@@ -379,6 +390,7 @@ async function runRelayTurn(
       finalSummary: result.text,
     });
 
+    relaySessions.delete(sessionKey);
     return result;
   }
 }
@@ -583,6 +595,10 @@ async function getRelaySession(
 ): Promise<RelaySession> {
   const existing = relaySessions.get(sessionKey);
   if (existing) {
+    console.info('OpenKaren reusing cached relay session promise', {
+      messageId: turn.message.id,
+      sessionKey,
+    });
     return existing;
   }
 
@@ -1452,6 +1468,8 @@ export function formatRelayResult(input: {
 
 function shapeRelayCompletion(output: string): string {
   const normalized = stripAnsi(output)
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/\u001b[()#][0-9A-Za-z]/g, '')
     .replace(/\u0007/g, '')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
@@ -1506,7 +1524,10 @@ function isRelayUiNoiseLine(line: string): boolean {
     || /^[╭╰│─]+$/.test(line)
     || /^esc to interrupt\)?$/i.test(line)
     || /^\/model to change$/i.test(line)
-    || /^~/i.test(line) && line.includes('/openkaren');
+    || /^<no output>$/i.test(line)
+    || /^directory:\s+~\//i.test(line)
+    || /^~/i.test(line) && line.includes('/openkaren')
+    || /^(╭|╰).*OpenAI Codex/i.test(line);
 }
 
 function isRelayUiNoiseBlock(block: string): boolean {

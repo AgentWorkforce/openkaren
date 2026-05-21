@@ -138,9 +138,9 @@ async function assertOrchestratedRelayFlow(): Promise<void> {
 
     const second = await runOpenKarenTurn(config, testTurn('telegram:1:11', 'Follow up'));
 
-    assertEqual(relays.length, 1, 'relay session count');
-    assertEqual(relay.spawns.length, 4, 'relay spawn count after follow-up');
-    assertEqual(relay.sentMessages.length, 4, 'follow-up handoff count');
+    assertEqual(relays.length, 2, 'relay session count');
+    assertEqual(relay.spawns.length, 4, 'initial relay spawn count');
+    assertEqual(relay.sentMessages.length, 0, 'fresh-turn handoff count');
 
     if (!second.text.includes('verifier output')) {
       throw new Error(`Expected verifier output on follow-up, got: ${second.text}`);
