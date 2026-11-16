@@ -1,8 +1,7 @@
 OpenKaren
 ==================
 
-That's right. We're taking the name back.
-Part of the Openclaw, Hermes, NangoClaw generation.
+OpenKaren is an agent project designed to keep context and tool output economical. The repository documents what is available and how to run it.
 
 # Karen is cheap
 Token conscious by default, saves you money
